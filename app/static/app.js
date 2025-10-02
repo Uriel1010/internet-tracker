@@ -142,10 +142,10 @@ function initTabs(){
       if(tab==='analytics'){
         fetchMetrics();
         // Force a snapshot again after short delay in case worker not yet ready
-        setTimeout(()=>{ if(worker){ console.debug('Force snapshot after tab open'); worker.postMessage({type:'snapshot'});} }, 1000);
+  setTimeout(()=>{ if(worker){ worker.postMessage({type:'snapshot'});} }, 1000);
         // If still no update logged after 2s, log a warning
         setTimeout(()=>{
-          if(!lastWorkerUpdate){ console.warn('No worker updates after opening analytics – will trigger fallback snapshot'); fetchMetrics(); }
+          if(!lastWorkerUpdate){ fetchMetrics(); }
         }, 2000);
       }
       if(tab==='outages'){ fetchOutages(); }
@@ -192,14 +192,13 @@ function initRangeButtons(){
 function startSSE(){
   try {
     sse = new EventSource('/api/stream/samples');
-    sse.onopen = ()=> { console.debug('SSE connected'); sseReconnectAttempts = 0; };
+  sse.onopen = ()=> { sseReconnectAttempts = 0; };
     sse.onmessage = ev => {
       if(paused) return;
       try {
         const sample = JSON.parse(ev.data);
         if(worker){ worker.postMessage({ type:'add', payload:{ sample } }); }
-        else console.warn('Sample received but worker missing');
-      } catch(e){ console.warn('Failed to parse SSE event', e, ev.data); }
+      } catch(e){ /* ignore parse errors */ }
     };
     sse.onerror = (e)=> {
       console.error('SSE error', e);
@@ -212,7 +211,7 @@ function startSSE(){
 function scheduleSSEReconnect(){
   sseReconnectAttempts++;
   const delay = Math.min(1000 * Math.pow(1.5, sseReconnectAttempts), MAX_SSE_RETRY_DELAY);
-  console.debug(`Scheduling SSE reconnect in ${Math.round(delay)}ms (attempt ${sseReconnectAttempts})`);
+  // reconnect scheduling log suppressed
   setTimeout(()=>{
     if(sse) return; // already connected
     startSSE();
@@ -226,7 +225,6 @@ async function fetchAndReseedIfNeeded(){
     const r = await fetch(`/api/metrics?range=${encodeURIComponent(currentRange)}&limit=5000`);
     const m = await r.json();
     if(m.samples && m.samples.length){
-      console.debug('Reseeding worker after reconnect with', m.samples.length, 'samples');
       worker.postMessage({ type:'replaceAll', payload:{ samples: m.samples }});
     }
   } catch(e){ console.warn('Reseed fetch failed', e); }
@@ -285,7 +283,7 @@ function initWorker(){
   try {
     const version = Date.now(); // cache-busting simple version
     worker = new Worker(`/static/worker.js?v=${version}`);
-    console.debug('Worker created');
+  // worker created
   } catch(e){
     console.error('Failed to start worker', e);
     return;
@@ -293,20 +291,19 @@ function initWorker(){
   worker.onmessage = ev => {
     const { type, payload } = ev.data;
     if(type==='update' || type==='snapshot'){
-      if(!payload){ console.warn('Worker empty payload', ev.data); return; }
-      if(!payload.metrics){ console.warn('Worker payload missing metrics', payload); return; }
+  if(!payload || !payload.metrics){ return; }
       const firstUpdate = lastWorkerUpdate === 0;
       lastWorkerUpdate = Date.now();
       updateQuickMetrics(payload.metrics);
       updateMetricsTable(payload.metrics);
       updateChartsFromWorker(payload.samples||[]);
-      if(type==='snapshot') console.debug('Worker snapshot', {samples: payload.samples?.length, metrics: payload.metrics});
+  // snapshot log removed
       if(firstUpdate && (!payload.samples || payload.samples.length===0)){
         // Immediately attempt a seed fetch if first update delivered zero samples
         seedWorkerIfEmpty();
       }
     } else {
-      console.debug('Worker unsolicited message', ev.data);
+  // ignore other message types
     }
   };
   worker.onerror = e => console.error('Worker error', e);
@@ -323,10 +320,7 @@ function armFallback(){
     const since = Date.now()-lastWorkerUpdate;
     if(lastWorkerUpdate===0 || since > 5000){
       const now = Date.now();
-      if(now - lastFallbackLog > 4000){
-        console.warn('No worker updates in >5s; performing direct metrics fetch fallback');
-        lastFallbackLog = now;
-      }
+      if(now - lastFallbackLog > 4000){ lastFallbackLog = now; }
       try {
         const r = await fetch(`/api/metrics?range=${encodeURIComponent(currentRange)}&limit=800`);
         const m = await r.json();
