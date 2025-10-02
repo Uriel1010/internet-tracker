@@ -10,6 +10,11 @@ let fallbackArmed = false;
 let consecutiveFallbacks = 0;
 let lastFallbackLog = 0;
 let sseReconnectAttempts = 0;
+// Persistence keys
+const PERSIST_KEY_SNAPSHOT = 'metricsSnapshot';
+const PERSIST_KEY_LAST_TS = 'metricsLastTs';
+// Guard to avoid double restoring
+let restoredFromCache = false;
 const MAX_SSE_RETRY_DELAY = 15000; // 15s cap
 
 function $(sel){ return document.querySelector(sel); }
@@ -156,6 +161,7 @@ function initTabs(){
 function init(){
   initWorker();
   initTabs();
+  restoreFromCache();
   fetchStatus();
   fetchOutages();
   fetchMetrics();
@@ -197,6 +203,8 @@ function startSSE(){
       if(paused) return;
       try {
         const sample = JSON.parse(ev.data);
+        // Update last sample timestamp persistence
+        if(sample && sample.ts){ localStorage.setItem(PERSIST_KEY_LAST_TS, sample.ts); }
         if(worker){ worker.postMessage({ type:'add', payload:{ sample } }); }
       } catch(e){ /* ignore parse errors */ }
     };
@@ -260,6 +268,8 @@ function updateChartsFromWorker(samples) {
   latencyChart.update();
   lossChart.update();
   jitterChart.update();
+  // Persist a lightweight snapshot (decimated samples + metrics from tables)
+  persistSnapshot(samples);
 }
 
 // Worker-derived metrics come through messages; local derivation removed.
@@ -385,3 +395,37 @@ function initDecimationSlider(){
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ---------- Persistence Helpers ----------
+function persistSnapshot(samples){
+  try {
+    if(!samples || !samples.length) return;
+    // Capture metrics currently displayed from quick metrics DOM (fast, no recompute)
+    const snapshot = {
+      range: currentRange,
+      decimationTarget,
+      samples: samples.map(s=> ({ ts: s.ts, success: s.success, latency_ms: s.latency_ms })),
+      savedAt: Date.now()
+    };
+    localStorage.setItem(PERSIST_KEY_SNAPSHOT, JSON.stringify(snapshot));
+  } catch(e){ /* ignore persistence errors */ }
+}
+
+function restoreFromCache(){
+  if(restoredFromCache) return;
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY_SNAPSHOT);
+    if(!raw) return;
+    const snap = JSON.parse(raw);
+    if(!snap || !Array.isArray(snap.samples) || !worker) return;
+    if(snap.range && snap.range !== currentRange) return; // only restore if same range
+    worker.postMessage({ type:'bulkAdd', payload:{ samples: snap.samples }});
+    // Last ts
+    if(snap.samples.length){
+      const last = snap.samples[snap.samples.length-1];
+      if(last.ts){ localStorage.setItem(PERSIST_KEY_LAST_TS, last.ts); }
+    }
+    restoredFromCache = true;
+  } catch(e){ /* ignore */ }
+}
+
