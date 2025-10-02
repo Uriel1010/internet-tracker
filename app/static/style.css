@@ -1,0 +1,54 @@
+body { font-family: system-ui, Arial, sans-serif; margin: 0; background: #0f1115; color: #e4e7ec; -webkit-font-smoothing: antialiased; }
+header { background:#1b1f27; padding:0.75rem 1rem 0.2rem; display:flex; flex-direction:column; gap:0.6rem; border-bottom:1px solid #222b36; }
+h1 { margin:0; font-size:1.2rem; font-weight:600; letter-spacing:0.5px; }
+.tabs { display:flex; gap:0.4rem; }
+.tab { background:#202833; color:#b5c2d1; border:1px solid #313d4a; padding:0.45rem 0.9rem; border-radius:6px 6px 0 0; cursor:pointer; font-size:0.75rem; font-weight:600; letter-spacing:0.5px; text-transform:uppercase; }
+.tab.active { background:#2c3744; color:#fff; border-bottom:1px solid #2c3744; }
+.tab:not(.active):hover { background:#27313d; }
+main { padding:0 0 2rem; }
+.tab-panel { padding:1rem 1.1rem; animation: fadeIn .25s ease; }
+@keyframes fadeIn { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform: translateY(0); } }
+.status-pill { display:inline-block; padding:0.4rem 0.9rem; border-radius: 999px; font-weight:600; font-size:0.85rem; background:#444; color:#ddd; }
+.status-pill.online { background:#063; color:#c7f9cc; }
+.status-pill.offline { background:#500; color:#f8d7da; }
+.status-pill.unknown { background:#444; color:#ddd; }
+.latency, .packet-loss { margin-top:0.4rem; font-size:0.75rem; opacity:0.85; }
+.quick-metrics { display:flex; flex-wrap:wrap; gap:0.75rem; margin-top:1rem; }
+.quick-metrics .metric { background:#1b242e; padding:0.65rem 0.8rem; border:1px solid #253241; border-radius:8px; min-width:110px; }
+.quick-metrics .metric h4 { margin:0 0 0.25rem; font-size:0.65rem; letter-spacing:0.5px; font-weight:600; text-transform:uppercase; color:#7d8c9b; }
+.quick-metrics .metric .val { font-size:0.95rem; font-weight:500; }
+.actions { margin-bottom:0.75rem; }
+button { background:#2d3645; color:#fff; border:1px solid #394454; padding:0.55rem 0.95rem; border-radius:6px; cursor:pointer; font-size:0.75rem; font-weight:600; letter-spacing:0.5px; }
+button:hover { background:#394454; }
+.table-wrapper { overflow-x:auto; border:1px solid #253241; border-radius:8px; }
+table { width:100%; border-collapse: collapse; font-size:0.75rem; }
+th, td { padding:0.5rem 0.6rem; text-align:left; white-space:nowrap; }
+thead { background:#222b36; position:sticky; top:0; }
+tbody tr:nth-child(even){ background:#161b22; }
+tbody tr:nth-child(odd){ background:#1c222b; }
+.charts-grid { display:grid; gap:1rem; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); margin-top:0.5rem; }
+.range-controls { grid-column:1 / -1; display:flex; justify-content:flex-end; align-items:center; gap:0.4rem; flex-wrap:wrap; }
+.range-buttons { display:flex; gap:0.4rem; flex-wrap:wrap; }
+.range-btn { background:#24303c; border:1px solid #33414e; padding:0.4rem 0.7rem; border-radius:6px; font-size:0.65rem; font-weight:600; letter-spacing:0.5px; cursor:pointer; text-transform:uppercase; }
+.range-btn:hover { background:#2e3a46; }
+.range-btn.active { background:#4db3ff; color:#062538; border-color:#4db3ff; }
+.range-btn.secondary { background:#35424f; }
+.range-btn#pauseToggle { background:#5a3d2d; border-color:#704c39; }
+.range-btn#pauseToggle:hover { background:#754d39; }
+.range-btn.secondary:hover { background:#415160; }
+.chart-card { background:#1b242e; padding:0.55rem 0.65rem 0.7rem; border:1px solid #253241; border-radius:10px; display:flex; flex-direction:column; min-height:180px; }
+.chart-card h3 { margin:0 0 0.4rem; font-size:0.7rem; font-weight:600; letter-spacing:0.5px; text-transform:uppercase; color:#9fb1c2; }
+.chart-card canvas { flex:1 1 auto; width:100% !important; height:140px !important; max-height:140px; }
+.metrics-table-wrapper { margin-top:1.2rem; overflow-x:auto; }
+#metrics-table { width:100%; border-collapse:collapse; font-size:0.75rem; }
+#metrics-table th, #metrics-table td { padding:0.5rem 0.6rem; }
+#metrics-table thead { background:#222b36; }
+footer { padding:1.2rem 1rem; font-size:0.6rem; opacity:0.6; }
+
+@media (max-width: 640px) {
+	h1 { font-size:1rem; }
+	.tab { flex:1; padding:0.5rem 0.4rem; font-size:0.6rem; }
+	.quick-metrics .metric { flex: 1 0 calc(50% - 0.75rem); }
+	.charts-grid { grid-template-columns:1fr; }
+	.range-controls { justify-content:space-between; }
+}

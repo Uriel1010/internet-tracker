@@ -1,0 +1,21 @@
+services:
+  tracker:
+    build: .
+    container_name: internet-tracker
+    restart: unless-stopped
+    ports:
+      - "18000:8000"
+    environment:
+      CHECK_INTERVAL: 1
+      TARGET_HOST: 8.8.8.8
+      CHECK_METHOD: ping
+      FAIL_THRESHOLD: 2
+      RECOVER_THRESHOLD: 2
+      DB_PATH: /data/data.sqlite3
+      TZ: Asia/Jerusalem
+    volumes:
+      - ./data:/data
+    # To use HTTP instead of ping (if ping blocked):
+    # environment:
+    #   CHECK_METHOD: http
+    #   TARGET_HOST: example.com

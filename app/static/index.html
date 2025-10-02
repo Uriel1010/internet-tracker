@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Internet Connectivity Tracker</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Internet Connectivity Tracker</h1>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="status" role="tab" aria-selected="true">Status</button>
+      <button class="tab" data-tab="outages" role="tab" aria-selected="false">Outages</button>
+      <button class="tab" data-tab="analytics" role="tab" aria-selected="false">Analytics</button>
+    </nav>
+  </header>
+  <main>
+    <section id="tab-status" class="tab-panel active" role="tabpanel">
+      <div class="status-block">
+        <div id="status" class="status-pill unknown">Loading...</div>
+        <div id="latency" class="latency"></div>
+        <div id="packet-loss" class="packet-loss"></div>
+      </div>
+      <div class="quick-metrics" id="quick-metrics"></div>
+    </section>
+    <section id="tab-outages" class="tab-panel" role="tabpanel" hidden>
+      <div class="actions">
+        <button id="refresh">Refresh</button>
+        <button id="export">Export TXT</button>
+      </div>
+      <div class="table-wrapper">
+        <table id="outages-table" data-tz="UTC">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th id="outage-start-header">Start (UTC)</th>
+              <th id="outage-end-header">End (UTC)</th>
+              <th>Duration (s)</th>
+            </tr>
+          </thead>
+            <tbody></tbody>
+        </table>
+      </div>
+    </section>
+    <section id="tab-analytics" class="tab-panel" role="tabpanel" hidden>
+      <div class="charts-grid">
+        <div class="range-controls" aria-label="Chart controls">
+          <div class="range-buttons" role="group" aria-label="Time range">
+            <button class="range-btn" data-range="5m">5m</button>
+            <button class="range-btn" data-range="1h">1h</button>
+            <button class="range-btn" data-range="24h">24h</button>
+            <button class="range-btn" data-range="all">All</button>
+            <button id="downloadCsv" class="range-btn secondary">CSV</button>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>Latency (ms)</h3>
+          <canvas id="latencyChart" height="140"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Packet Loss (%)</h3>
+          <canvas id="lossChart" height="140"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Jitter (ms)</h3>
+          <canvas id="jitterChart" height="140"></canvas>
+        </div>
+      </div>
+      <div class="metrics-table-wrapper">
+        <table id="metrics-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody id="metrics-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <p>Tracking connectivity every second. Configure via environment variables.</p>
+  </footer>
+  <script src="/static/app.js?v=1"></script>
+</body>
+</html>
