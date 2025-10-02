@@ -56,15 +56,23 @@ async def outages():
 
 @app.get("/api/outages/export")
 async def export_outages():
+    """Export outages as CSV using ONLY local timezone timestamps.
+
+    Columns: id,start_time_local,end_time_local,duration_seconds
+    """
     rows = await db.list_outages()
-    lines = ["ID\tStart (UTC)\tStart (Local)\tEnd (UTC)\tEnd (Local)\tDuration (s)"]
+    lines = ["id,start_time_local,end_time_local,duration_seconds"]
     for r in rows:
         start_local = db.from_utc_iso(r['start_time']).isoformat()
         end_val = r.get('end_time')
         end_local = db.from_utc_iso(end_val).isoformat() if end_val else ''
-        lines.append(f"{r['id']}\t{r['start_time']}\t{start_local}\t{end_val or ''}\t{end_local}\t{r.get('duration_seconds','')}")
+        dur = r.get('duration_seconds','')
+        lines.append(f"{r['id']},{start_local},{end_local},{dur}")
     content = "\n".join(lines)
-    headers = {"Content-Disposition": "attachment; filename=outages.txt"}
+    headers = {
+        "Content-Disposition": "attachment; filename=outages.csv",
+        "Content-Type": "text/csv; charset=utf-8"
+    }
     return PlainTextResponse(content, headers=headers)
 
 @app.get("/api/metrics")
