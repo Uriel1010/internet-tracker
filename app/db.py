@@ -68,6 +68,23 @@ async def init_db():
     db = await get_db()
     await db.executescript(INIT_SQL)
     await db.commit()
+    # Migration: conditionally add service columns
+    for table in ("outages", "latency_samples"):
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        cols = [r[1] for r in await cur.fetchall()]
+        if 'service' not in cols:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN service TEXT DEFAULT 'default'")
+    await db.commit()
+    # Ensure indexes on service columns
+    try:
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_outages_service ON outages(service)")
+    except Exception:
+        pass
+    try:
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_latency_service ON latency_samples(service)")
+    except Exception:
+        pass
+    await db.commit()
 
 async def close_db():
     global _db
@@ -75,10 +92,10 @@ async def close_db():
         await _db.close()
         _db = None
 
-async def create_outage(start_time: dt.datetime) -> int:
+async def create_outage(start_time: dt.datetime, service: str = 'default') -> int:
     db = await get_db()
     cur = await db.execute(
-        "INSERT INTO outages (start_time) VALUES (?)", (to_utc_iso(start_time),)
+        "INSERT INTO outages (start_time, service) VALUES (?, ?)", (to_utc_iso(start_time), service)
     )
     await db.commit()
     return cur.lastrowid
@@ -91,79 +108,86 @@ async def end_outage(outage_id: int, end_time: dt.datetime, duration_seconds: fl
     )
     await db.commit()
 
-async def list_outages(limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    q = "SELECT id, start_time, end_time, duration_seconds FROM outages ORDER BY start_time DESC"
+async def list_outages(limit: Optional[int] = None, service: Optional[str] = None) -> List[Dict[str, Any]]:
+    q = "SELECT id, start_time, end_time, duration_seconds, service FROM outages"
+    params: tuple = ()
+    if service:
+        q += " WHERE service = ?"
+        params = (service,)
+    q += " ORDER BY start_time DESC"
     if limit:
         q += " LIMIT ?"
+        params = params + (limit,) if params else (limit,)
     db = await get_db()
-    cur = await db.execute(q, (limit,) if limit else ())
+    cur = await db.execute(q, params)
     rows = await cur.fetchall()
     return [dict(r) for r in rows]
 
-async def ongoing_outage() -> Optional[Dict[str, Any]]:
+async def ongoing_outage(service: str = 'default') -> Optional[Dict[str, Any]]:
     db = await get_db()
     cur = await db.execute(
-        "SELECT id, start_time FROM outages WHERE end_time IS NULL ORDER BY id DESC LIMIT 1"
+        "SELECT id, start_time, service FROM outages WHERE end_time IS NULL AND service = ? ORDER BY id DESC LIMIT 1",
+        (service,)
     )
     row = await cur.fetchone()
     return dict(row) if row else None
 
-async def add_latency_sample(ts: dt.datetime, success: bool, latency_ms: Optional[float]):
+async def add_latency_sample(ts: dt.datetime, success: bool, latency_ms: Optional[float], service: str = 'default'):
     db = await get_db()
     await db.execute(
-        "INSERT INTO latency_samples (ts, success, latency_ms) VALUES (?,?,?)",
-        (to_utc_iso(ts), 1 if success else 0, latency_ms),
+        "INSERT INTO latency_samples (ts, success, latency_ms, service) VALUES (?,?,?,?)",
+        (to_utc_iso(ts), 1 if success else 0, latency_ms, service),
     )
     await db.commit()
 
-async def recent_latency_samples(limit: int = 300):
+async def recent_latency_samples(limit: int = 300, service: str = 'default'):
     db = await get_db()
     cur = await db.execute(
-        "SELECT ts, success, latency_ms FROM latency_samples ORDER BY id DESC LIMIT ?",
-        (limit,),
+        "SELECT ts, success, latency_ms FROM latency_samples WHERE service = ? ORDER BY id DESC LIMIT ?",
+        (service, limit),
     )
     rows = await cur.fetchall()
     data = [dict(r) for r in rows]
     data.reverse()  # chronological
     return data
 
-async def prune_latency_samples(keep: int = 10000):
+async def prune_latency_samples(keep: int = 10000, service: str = 'default'):
     db = await get_db()
     # Find the ID of the nth most recent sample
     cursor = await db.execute(
-        "SELECT id FROM latency_samples ORDER BY id DESC LIMIT 1 OFFSET ?", (keep,)
+        "SELECT id FROM latency_samples WHERE service = ? ORDER BY id DESC LIMIT 1 OFFSET ?", (service, keep)
     )
     row = await cursor.fetchone()
     if row:
         cutoff_id = row["id"]
         # Delete all samples with an ID less than or equal to the cutoff ID
         res = await db.execute(
-            "DELETE FROM latency_samples WHERE id <= ?", (cutoff_id,)
+            "DELETE FROM latency_samples WHERE id <= ? AND service = ?", (cutoff_id, service)
         )
         await db.commit()
         if res.rowcount > 0:
-            log.info(f"Pruned {res.rowcount} old latency samples")
+            log.info(f"Pruned {res.rowcount} old latency samples for service={service}")
 
-async def latency_samples_since(ts: dt.datetime):
+async def latency_samples_since(ts: dt.datetime, service: str = 'default'):
     db = await get_db()
     cur = await db.execute(
-        "SELECT id, ts, success, latency_ms FROM latency_samples WHERE ts >= ? ORDER BY id ASC",
-        (to_utc_iso(ts),),
+        "SELECT id, ts, success, latency_ms FROM latency_samples WHERE ts >= ? AND service = ? ORDER BY id ASC",
+        (to_utc_iso(ts), service),
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]
 
-async def latest_latency_id() -> int:
+async def latest_latency_id(service: str = 'default') -> int:
     db = await get_db()
-    cur = await db.execute("SELECT id FROM latency_samples ORDER BY id DESC LIMIT 1")
+    cur = await db.execute("SELECT id FROM latency_samples WHERE service = ? ORDER BY id DESC LIMIT 1", (service,))
     row = await cur.fetchone()
     return row[0] if row else 0
 
-async def latency_samples_after_id(last_id: int):
+async def latency_samples_after_id(last_id: int, service: str = 'default'):
     db = await get_db()
     cur = await db.execute(
-        "SELECT id, ts, success, latency_ms FROM latency_samples WHERE id > ? ORDER BY id ASC",
-        (last_id,),
+        "SELECT id, ts, success, latency_ms FROM latency_samples WHERE id > ? AND service = ? ORDER BY id ASC",
+        (last_id, service),
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]

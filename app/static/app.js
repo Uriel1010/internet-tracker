@@ -154,6 +154,7 @@ function initTabs(){
         }, 2000);
       }
       if(tab==='outages'){ fetchOutages(); }
+      if(tab==='settings'){ refreshWebhookStatus(); }
     });
   });
 }
@@ -175,6 +176,7 @@ function init(){
   initDecimationSlider();
   initPauseButton();
   startSSE();
+  initWebhookTest();
 }
 
 function initRangeButtons(){
@@ -427,5 +429,83 @@ function restoreFromCache(){
     }
     restoredFromCache = true;
   } catch(e){ /* ignore */ }
+}
+
+// ---------------- Webhook Settings -----------------
+async function refreshWebhookStatus(){
+  try {
+    const r = await fetch('/api/webhook/status');
+    const data = await r.json();
+    const el = document.getElementById('webhook-status');
+    if(!el) return;
+    if(!data.configured){
+      el.innerHTML = '<span class="warn">Webhook not configured (set ALERT_WEBHOOK_URL)</span>';
+      return;
+    }
+    const startEnabled = data.send_start_event === true;
+    // Adjust UI text to reflect only end events if start disabled
+    el.innerHTML = `URL: <code>${data.url}</code><br/>Mode: ${startEnabled? 'Outage start & end' : 'Outage end only'}<br/>Last Event: ${data.last_event||'-'} | Last Code: ${data.last_status_code||'-'} | Last Success: ${data.last_success||'-'}`;
+    // Hide or disable start test button if start events disabled
+    const btnStart = document.getElementById('webhook-test-start');
+    if(btnStart){
+      if(!startEnabled){
+        btnStart.disabled = true;
+        btnStart.title = 'Start events disabled (ALERT_WEBHOOK_SEND_START=false)';
+        btnStart.classList.add('disabled');
+      } else {
+        btnStart.disabled = false;
+        btnStart.title = '';
+        btnStart.classList.remove('disabled');
+      }
+    }
+  } catch(e){ /* ignore */ }
+}
+
+function initWebhookTest(){
+  const btnExample = document.getElementById('webhook-example-outage');
+  const btnEnd = document.getElementById('webhook-test-end'); // hidden raw test fallback
+  if(btnExample){ btnExample.addEventListener('click', triggerExampleOutage); }
+  if(btnEnd){ btnEnd.addEventListener('click', ()=> triggerWebhookTest('end')); }
+  setInterval(()=>{
+    const settingsPanel = document.getElementById('tab-settings');
+    if(settingsPanel && settingsPanel.classList.contains('active')){
+      refreshWebhookStatus();
+    }
+  }, 10000);
+}
+
+async function triggerWebhookTest(kind){
+  try {
+    const r = await fetch(`/api/webhook/test?event=${encodeURIComponent(kind)}`, { method:'POST' });
+    const data = await r.json();
+    refreshWebhookStatus();
+    if(data.skipped){
+      alert('Start event skipped: '+ (data.reason||'disabled'));
+      return;
+    }
+    alert(data.sent ? `Test ${kind} webhook sent.` : `Webhook test failed: ${data.error}`);
+  } catch(e){ alert('Webhook test error'); }
+}
+
+async function triggerExampleOutage(){
+  const btn = document.getElementById('webhook-example-outage');
+  if(btn){ btn.disabled = true; btn.textContent = 'Sending...'; }
+  try {
+    const r = await fetch('/api/webhook/example-outage', { method:'POST' });
+    const data = await r.json();
+    refreshWebhookStatus();
+    if(!data.ok){
+      alert('Example outage failed: '+ (data.error||'unknown'));
+    } else {
+      const sentParts = [];
+      if(data.start_sent) sentParts.push('start');
+      if(data.end_sent) sentParts.push('end');
+      alert('Example outage triggered. Events sent: '+ (sentParts.join(', ')||'none (all disabled)'));
+    }
+  } catch(e){
+    alert('Example outage error');
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = 'Send Example Outage'; }
+  }
 }
 

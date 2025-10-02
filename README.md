@@ -93,28 +93,36 @@ Key performance choices:
     ```
 
 2.  **Run the Docker container:**
-    ```bash
-    docker run --name internet-tracker -p 8000:8000 internet-tracker
-    ```
-    
-    You can also use the provided `docker-compose.yml` file:
-    ```bash
-    docker-compose up -d
-    ```
+  ```bash
+  docker run --name internet-tracker -p 8000:8000 internet-tracker
+  ```
+
+  Or use Docker Compose (recommended for volumes / env management):
+  ```bash
+  cp docker-compose.example.yml docker-compose.yml
+  cp .env.example .env   # then edit .env if needed
+  docker compose up -d
+  ```
+  Edit `docker-compose.yml` or `.env` to change targets, intervals, timezone, or enable webhooks.
 
 ## ⚙️ Configuration
 
 The application can be configured using environment variables. You can create a `.env` file in the project root directory to store your configuration.
 
-| Variable            | Description                                                 | Default     |
-| ------------------- | ----------------------------------------------------------- | ----------- |
-| `CHECK_INTERVAL`    | The interval in seconds between connectivity checks.        | `1`         |
-| `TARGET_HOST`       | The host to ping for connectivity checks.                   | `8.8.8.8`   |
-| `CHECK_METHOD`      | The method to use for connectivity checks (`ping` or `http`). | `ping`      |
-| `FAIL_THRESHOLD`    | The number of consecutive failures to trigger an outage.    | `2`         |
-| `RECOVER_THRESHOLD` | The number of consecutive successes to end an outage.       | `2`         |
-| `DB_PATH`           | The path to the SQLite database file.                       | `/data/data.sqlite3` |
-| `TZ`                | The timezone to use for displaying dates and times.         | `UTC`       |
+| Variable | Description | Default |
+| -------- | ----------- | ------- |
+| `CHECK_INTERVAL` | Interval in seconds between checks | `1` |
+| `TARGET_HOST` | Host/IP or URL target (single-service mode) | `8.8.8.8` |
+| `CHECK_METHOD` | `ping` or `http` | `ping` |
+| `FAIL_THRESHOLD` | Consecutive fails to open outage | `2` |
+| `RECOVER_THRESHOLD` | Consecutive successes to close outage | `2` |
+| `DB_PATH` | SQLite path (inside container) | `/data/data.sqlite3` |
+| `TZ` | Local timezone for output | `UTC` |
+| `MULTI_SERVICES` | JSON array of service definitions (see below) | *(unset)* |
+| `ALERT_WEBHOOK_URL` | Optional webhook endpoint for outage events | *(unset)* |
+| `ALERT_WEBHOOK_SEND_END` | Also send outage end event | `true` |
+| `ALERT_WEBHOOK_TIMEOUT` | Webhook request timeout seconds | `5` |
+| `LOG_LEVEL` | Python log level | `INFO` |
 
 ### Timezone Behavior
 All timestamps are stored internally in UTC. API responses include both UTC and localized forms where appropriate:
@@ -124,6 +132,54 @@ All timestamps are stored internally in UTC. API responses include both UTC and 
 - Streaming events: `ts` (UTC) + `ts_local`
 
 Change timezone by setting `TZ` (e.g. `Europe/Berlin`, `Asia/Jerusalem`). Invalid zones fall back to UTC.
+
+### Multi‑Service Mode
+
+Instead of single `TARGET_HOST` you can define multiple services:
+
+```
+MULTI_SERVICES='[
+  {"name":"dns","method":"ping","target":"8.8.8.8","interval":1},
+  {"name":"web","method":"http","target":"https://example.com","interval":5}
+]'
+```
+
+Each object supports: `name`, `method`, `target`, `interval`, `fail_threshold`, `recover_threshold` (optional overrides). The first service (or `service` query param) is used by the legacy UI views.
+
+### Webhook Alerts
+
+Enable outage event webhooks by setting `ALERT_WEBHOOK_URL`. By default only the outage **end** event is sent (so you get one notification per outage with the full duration). Set `ALERT_WEBHOOK_SEND_START=true` if you also want a start notification when an outage first opens.
+
+Key variables:
+| Variable | Purpose | Default |
+| -------- | ------- | ------- |
+| `ALERT_WEBHOOK_URL` | Destination HTTP endpoint (POST JSON) | *(unset)* |
+| `ALERT_WEBHOOK_SEND_END` | Send outage end event | `true` |
+| `ALERT_WEBHOOK_SEND_START` | Send outage start event | `false` |
+| `ALERT_WEBHOOK_TIMEOUT` | Request timeout seconds | `5` |
+
+Events:
+
+`outage.start` payload fields:
+```
+event, service, outage_id, start_time, start_time_local, target, method, interval, fail_threshold, recover_threshold
+```
+
+`outage.end` adds:
+```
+end_time, end_time_local, duration_seconds
+```
+
+Testing / diagnostics (Settings tab or API):
+```
+POST /api/webhook/test?event=start   # may be skipped if start disabled
+POST /api/webhook/test?event=end
+POST /api/webhook/example-outage     # simulates a ~37s outage (sends end only unless start enabled)
+GET  /api/webhook/status
+```
+The example outage helper is useful when you only send end events: you can validate your integration still receives a realistic `outage.end` without waiting for a real outage.
+GET  /api/webhook/status
+```
 
 ### Adding a .env (optional)
 Create a `.env` and reference it in `docker-compose.yml` or load manually:
@@ -156,7 +212,15 @@ The application provides a RESTful API for accessing connectivity data.
 | GET | `/api/metrics/export.csv` | Bulk CSV export | Includes both time forms |
 | GET | `/api/stream/samples` | SSE with new samples | Auto-reconnect handled in UI |
 
-Future ideas: `/api/health`, `/api/version`, webhook triggers.
+Additional endpoints:
+
+| Method | Endpoint | Description |
+| ------ | -------- | ----------- |
+| GET | `/api/webhook/status` | Webhook configuration & last delivery info |
+| POST | `/api/webhook/test?event=start|end` | Send synthetic test webhook |
+| GET | `/api/services` | List configured services & states |
+
+Future ideas: `/api/health`, `/api/version`, Prometheus metrics.
 
 ### Sample SSE Event
 ```json

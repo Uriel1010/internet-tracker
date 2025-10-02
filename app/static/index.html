@@ -14,7 +14,8 @@
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="status" role="tab" aria-selected="true">Status</button>
       <button class="tab" data-tab="outages" role="tab" aria-selected="false">Outages</button>
-      <button class="tab" data-tab="analytics" role="tab" aria-selected="false">Analytics</button>
+  <button class="tab" data-tab="analytics" role="tab" aria-selected="false">Analytics</button>
+  <button class="tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
     </nav>
   </header>
   <main>
@@ -82,6 +83,19 @@
       </div>
     </section>
   </main>
+    <section id="tab-settings" class="tab-panel" role="tabpanel" hidden>
+      <h2>Settings</h2>
+      <div class="settings-group">
+        <h3>Webhook</h3>
+        <p>Configure outage webhooks via <code>ALERT_WEBHOOK_URL</code>. The example outage simulates a full outage and (by default) sends only the end event.</p>
+        <div id="webhook-status" class="webhook-status">Loading webhook status...</div>
+        <div class="actions" style="margin-top:0.5rem; gap:0.5rem; display:flex; flex-wrap:wrap;">
+          <button id="webhook-example-outage">Send Example Outage</button>
+          <button id="webhook-test-end" class="secondary" style="display:none;">Raw End Test</button>
+        </div>
+        <small>Refreshes every 10s while this tab is open. Set <code>ALERT_WEBHOOK_SEND_START=true</code> to also receive start events.</small>
+      </div>
+    </section>
   <footer>
     <p>Tracking connectivity every second. Configure via environment variables.</p>
   </footer>

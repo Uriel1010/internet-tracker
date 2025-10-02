@@ -13,6 +13,9 @@ services:
       RECOVER_THRESHOLD: 2
       DB_PATH: /data/data.sqlite3
       TZ: Asia/Jerusalem
+      ALERT_WEBHOOK_URL: https://n8n.urielmz.com/webhook/77cc4c77-1f99-415f-8ba6-e275effc04b7
+      ALERT_WEBHOOK_SEND_END: true
+      ALERT_WEBHOOK_TIMEOUT: 5
     volumes:
       - ./data:/data
     # To use HTTP instead of ping (if ping blocked):

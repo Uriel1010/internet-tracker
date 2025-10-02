@@ -1,0 +1,55 @@
+version: "3.9"
+
+# Example docker compose file for Internet Tracker
+# Copy to docker-compose.yml and adjust values OR run:
+#   cp docker-compose.example.yml docker-compose.yml
+#   cp .env.example .env   # then edit .env
+
+services:
+  tracker:
+    build: .
+    container_name: internet-tracker
+    restart: unless-stopped
+    ports:
+      - "18000:8000"   # host:container
+    environment:
+      # Basic single-service settings (override via .env or here)
+      CHECK_INTERVAL: 1
+      TARGET_HOST: 8.8.8.8
+      CHECK_METHOD: ping   # or http
+      FAIL_THRESHOLD: 2
+      RECOVER_THRESHOLD: 2
+      TZ: UTC
+      # DB path inside container (mounted volume below)
+      DB_PATH: /data/data.sqlite3
+      # Optional: Multi-service mode (commented example)
+      # MULTI_SERVICES: >-
+      #   [
+      #     {"name":"dns","method":"ping","target":"8.8.8.8","interval":1},
+      #     {"name":"web","method":"http","target":"https://example.com","interval":5}
+      #   ]
+      # Optional webhook alerts (leave empty if not used)
+      # ALERT_WEBHOOK_URL: https://your-endpoint.example.com/hook
+      # ALERT_WEBHOOK_SEND_END: true
+      # ALERT_WEBHOOK_TIMEOUT: 5
+      # LOG_LEVEL: INFO
+    volumes:
+      - ./data:/data
+    # If ping is blocked in your network, switch method to HTTP:
+    # environment:
+    #   CHECK_METHOD: http
+    #   TARGET_HOST: example.com
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Uncomment to limit resources (example)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.25"
+    #       memory: 256M
