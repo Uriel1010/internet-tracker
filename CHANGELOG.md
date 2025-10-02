@@ -7,6 +7,10 @@ All notable changes to this project will be documented here.
 - Add alerting/webhook integration
 - Dark mode UI
 
+## 0.1.1 - 2025-10-02
+### Changed
+- Outages export now CSV with local timezone only (removed UTC + TXT format)
+
 ## 0.1.0 - 2025-10-02
 ### Added
 - Initial public release
