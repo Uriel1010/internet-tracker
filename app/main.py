@@ -253,3 +253,12 @@ async def webhook_example_outage():
         return {"ok": True, **result, "status": webhooks.status()}
     except Exception as e:
         return {"ok": False, "error": str(e), "status": webhooks.status()}
+
+
+@app.post("/api/webhook/test-external")
+async def webhook_test_external():
+    try:
+        result = await webhooks.fire_test_webhook()
+        return {**result, "status": webhooks.status()}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "status": webhooks.status()}

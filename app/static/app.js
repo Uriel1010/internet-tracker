@@ -445,6 +445,9 @@ async function refreshWebhookStatus(){
     const startEnabled = data.send_start_event === true;
     // Adjust UI text to reflect only end events if start disabled
     el.innerHTML = `URL: <code>${data.url}</code><br/>Mode: ${startEnabled? 'Outage start & end' : 'Outage end only'}<br/>Last Event: ${data.last_event||'-'} | Last Code: ${data.last_status_code||'-'} | Last Success: ${data.last_success||'-'}`;
+    if(data.test_url){
+      el.innerHTML += `<br/>Test URL: <code>${data.test_url}</code>`;
+    }
     // Hide or disable start test button if start events disabled
     const btnStart = document.getElementById('webhook-test-start');
     if(btnStart){
@@ -464,8 +467,10 @@ async function refreshWebhookStatus(){
 function initWebhookTest(){
   const btnExample = document.getElementById('webhook-example-outage');
   const btnEnd = document.getElementById('webhook-test-end'); // hidden raw test fallback
+  const btnExternal = document.getElementById('webhook-test-external');
   if(btnExample){ btnExample.addEventListener('click', triggerExampleOutage); }
   if(btnEnd){ btnEnd.addEventListener('click', ()=> triggerWebhookTest('end')); }
+  if(btnExternal){ btnExternal.addEventListener('click', triggerExternalWebhookTest); }
   setInterval(()=>{
     const settingsPanel = document.getElementById('tab-settings');
     if(settingsPanel && settingsPanel.classList.contains('active')){
@@ -506,6 +511,24 @@ async function triggerExampleOutage(){
     alert('Example outage error');
   } finally {
     if(btn){ btn.disabled = false; btn.textContent = 'Send Example Outage'; }
+  }
+}
+
+async function triggerExternalWebhookTest(){
+  const btn = document.getElementById('webhook-test-external');
+  if(btn){ btn.disabled = true; btn.textContent = 'Sending...'; }
+  try {
+    const r = await fetch('/api/webhook/test-external', { method:'POST' });
+    const data = await r.json();
+    if(!data.ok){
+      alert('Test webhook failed: ' + (data.error || data.status_code || 'unknown error'));
+      return;
+    }
+    alert(`Test webhook sent (status ${data.status_code}).`);
+  } catch(e){
+    alert('Test webhook error');
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = 'Send Test Webhook'; }
   }
 }
 

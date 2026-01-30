@@ -7,6 +7,14 @@ All notable changes to this project will be documented here.
 - Add alerting/webhook integration
 - Dark mode UI
 
+## 0.2.1 - 2026-01-30
+### Added
+- Settings tab **Send Test Webhook** button wired to new `/api/webhook/test-external` endpoint.
+- Default test webhook target, overridable via `ALERT_WEBHOOK_TEST_URL`.
+
+### Changed
+- README documents webhook diagnostics workflow and new environment variable.
+
 ## 0.2.0 - 2025-10-03
 ### Added
 - Multi-service monitoring via `MULTI_SERVICES` JSON array (concurrent per-target loops)

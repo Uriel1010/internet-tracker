@@ -10,6 +10,8 @@ from . import db
 log = logging.getLogger(__name__)
 
 WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "").strip()
+DEFAULT_TEST_WEBHOOK_URL = "https://n8n.urielmz.com/webhook-test/77cc4c77-1f99-415f-8ba6-e275effc04b7"
+TEST_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_TEST_URL", DEFAULT_TEST_WEBHOOK_URL).strip()
 WEBHOOK_TIMEOUT = float(os.getenv("ALERT_WEBHOOK_TIMEOUT", "5"))
 SEND_END_EVENT = os.getenv("ALERT_WEBHOOK_SEND_END", "true").lower() in {"1", "true", "yes", "on"}
 # New: allow disabling start event (user requested only end notifications)
@@ -43,8 +45,9 @@ def status() -> Dict[str, Any]:
         "last_error": _last_error,
         "last_status_code": _last_status_code,
         "last_event": _last_event,
-    "send_end_event": SEND_END_EVENT,
-    "send_start_event": SEND_START_EVENT,
+        "send_end_event": SEND_END_EVENT,
+        "send_start_event": SEND_START_EVENT,
+        "test_url": TEST_WEBHOOK_URL or None,
         "timeout_seconds": WEBHOOK_TIMEOUT,
     }
 
@@ -180,4 +183,44 @@ async def fire_example_outage():
             "send_start_event": SEND_START_EVENT,
             "send_end_event": SEND_END_EVENT,
         }
+    }
+
+
+async def fire_test_webhook() -> Dict[str, Any]:
+    """Send a synthetic outage.end payload to the configured test webhook URL."""
+    if not TEST_WEBHOOK_URL:
+        raise RuntimeError("Test webhook URL not configured")
+    now = dt.datetime.now(dt.timezone.utc)
+    fake_state = type(
+        "TestState",
+        (),
+        {
+            "config": type(
+                "Cfg",
+                (),
+                {
+                    "name": "test-webhook",
+                    "target": "webhook-test",
+                    "method": "manual",
+                    "interval": 0.0,
+                    "fail_threshold": 0,
+                    "recover_threshold": 0,
+                },
+            )()
+        },
+    )()
+    payload = outage_end_payload(fake_state, 4242, now - dt.timedelta(seconds=15), now, 15.0)
+    try:
+        async with _lock:
+            client = await _get_client()
+            resp = await client.post(TEST_WEBHOOK_URL, json=payload)
+    except Exception as exc:
+        raise RuntimeError(f"Test webhook send failed: {exc}") from exc
+    ok = 200 <= resp.status_code < 300
+    return {
+        "ok": ok,
+        "status_code": resp.status_code,
+        "response_text": resp.text[:200] if resp.text else "",
+        "payload": payload,
+        "test_url": TEST_WEBHOOK_URL,
     }

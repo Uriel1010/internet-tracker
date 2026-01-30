@@ -22,6 +22,7 @@
 - **Smart Outage Detection:** Threshold-based failure / recovery logic with precise duration calculation.
 - **Deep Metrics:** Live latency, min/max/avg, jitter (mean absolute delta), success/failure counts, packet loss %.
 - **High‑Performance UI:** Web Worker offloads aggregation + downsampling (LTTB) for smooth charts even with tens of thousands of points.
+- **Webhook Diagnostics:** Built-in example outage and direct test webhook button make integrations easy to validate.
 - **Interactive Analytics:** Time range controls (5m / 1h / 24h / All) with dynamic decimation slider and pause/resume.
 - **Resilient Streaming:** Server-Sent Events (SSE) with auto-reconnect and state reseeding after backend restarts.
 - **Data Export:** One-click CSV (metrics) and TXT (outages) exports with both UTC and localized timestamps.
@@ -122,6 +123,7 @@ The application can be configured using environment variables. You can create a 
 | `ALERT_WEBHOOK_URL` | Optional webhook endpoint for outage events | *(unset)* |
 | `ALERT_WEBHOOK_SEND_END` | Also send outage end event | `true` |
 | `ALERT_WEBHOOK_TIMEOUT` | Webhook request timeout seconds | `5` |
+| `ALERT_WEBHOOK_TEST_URL` | Override default test webhook destination | *(preset demo URL)* |
 | `LOG_LEVEL` | Python log level | `INFO` |
 
 ### Timezone Behavior
@@ -148,7 +150,7 @@ Each object supports: `name`, `method`, `target`, `interval`, `fail_threshold`, 
 
 ### Webhook Alerts
 
-Enable outage event webhooks by setting `ALERT_WEBHOOK_URL`. By default only the outage **end** event is sent (so you get one notification per outage with the full duration). Set `ALERT_WEBHOOK_SEND_START=true` if you also want a start notification when an outage first opens.
+Enable outage event webhooks by setting `ALERT_WEBHOOK_URL`. By default only the outage **end** event is sent (so you get one notification per outage with the full duration). Set `ALERT_WEBHOOK_SEND_START=true` if you also want a start notification when an outage first opens. Use the Settings tab buttons to send an example outage or the dedicated **Send Test Webhook** action, which posts a synthetic `outage.end` payload to the configurable test target (defaults to the hosted n8n demo URL, override with `ALERT_WEBHOOK_TEST_URL`).
 
 Key variables:
 | Variable | Purpose | Default |
@@ -157,6 +159,7 @@ Key variables:
 | `ALERT_WEBHOOK_SEND_END` | Send outage end event | `true` |
 | `ALERT_WEBHOOK_SEND_START` | Send outage start event | `false` |
 | `ALERT_WEBHOOK_TIMEOUT` | Request timeout seconds | `5` |
+| `ALERT_WEBHOOK_TEST_URL` | Destination for Send Test Webhook button | `https://n8n.urielmz.com/webhook-test/77cc4c77-1f99-415f-8ba6-e275effc04b7` |
 
 Events:
 
@@ -175,6 +178,7 @@ Testing / diagnostics (Settings tab or API):
 POST /api/webhook/test?event=start   # may be skipped if start disabled
 POST /api/webhook/test?event=end
 POST /api/webhook/example-outage     # simulates a ~37s outage (sends end only unless start enabled)
+POST /api/webhook/test-external      # Send Test Webhook button helper (outage.end payload)
 GET  /api/webhook/status
 ```
 The example outage helper is useful when you only send end events: you can validate your integration still receives a realistic `outage.end` without waiting for a real outage.
@@ -218,6 +222,7 @@ Additional endpoints:
 | ------ | -------- | ----------- |
 | GET | `/api/webhook/status` | Webhook configuration & last delivery info |
 | POST | `/api/webhook/test?event=start|end` | Send synthetic test webhook |
+| POST | `/api/webhook/test-external` | Trigger Send Test Webhook (`outage.end` payload) |
 | GET | `/api/services` | List configured services & states |
 
 Future ideas: `/api/health`, `/api/version`, Prometheus metrics.
