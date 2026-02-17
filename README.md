@@ -124,6 +124,9 @@ The application can be configured using environment variables. You can create a 
 | `ALERT_WEBHOOK_SEND_END` | Also send outage end event | `true` |
 | `ALERT_WEBHOOK_TIMEOUT` | Webhook request timeout seconds | `5` |
 | `ALERT_WEBHOOK_TEST_URL` | Override default test webhook destination | *(preset demo URL)* |
+| `SPEEDTEST_ENABLED` | Enable periodic speedtest collection | `false` |
+| `SPEEDTEST_INTERVAL` | Seconds between speedtest runs | `1800` |
+| `SPEEDTEST_SERVICE` | Service name bucket for speedtest samples | `default` |
 | `LOG_LEVEL` | Python log level | `INFO` |
 
 ### Timezone Behavior
@@ -214,6 +217,7 @@ The application provides a RESTful API for accessing connectivity data.
 | GET | `/api/outages/export` | TXT export (UTC + Local) | Attachment |
 | GET | `/api/metrics?range=5m` | Metrics + samples (filtered) | Ranges: 5m,1h,24h,all |
 | GET | `/api/metrics/export.csv` | Bulk CSV export | Includes both time forms |
+| GET | `/api/trends?days=30` | Daily trends (loss/latency/outages + speedtest) | `days` min 7, max 180 |
 | GET | `/api/stream/samples` | SSE with new samples | Auto-reconnect handled in UI |
 
 Additional endpoints:

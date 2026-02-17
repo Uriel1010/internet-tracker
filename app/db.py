@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS latency_samples (
     latency_ms REAL
 );
 CREATE INDEX IF NOT EXISTS idx_latency_ts ON latency_samples(ts);
+CREATE TABLE IF NOT EXISTS speedtest_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    download_mbps REAL,
+    upload_mbps REAL,
+    ping_ms REAL,
+    server_name TEXT,
+    service TEXT DEFAULT 'default'
+);
+CREATE INDEX IF NOT EXISTS idx_speedtest_ts ON speedtest_samples(ts);
 """
 
 async def get_db() -> aiosqlite.Connection:
@@ -82,6 +92,18 @@ async def init_db():
         pass
     try:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_latency_service ON latency_samples(service)")
+    except Exception:
+        pass
+    # Migration for speedtest table service column (defensive for pre-existing DBs)
+    try:
+        cur = await db.execute("PRAGMA table_info(speedtest_samples)")
+        cols = [r[1] for r in await cur.fetchall()]
+        if 'service' not in cols:
+            await db.execute("ALTER TABLE speedtest_samples ADD COLUMN service TEXT DEFAULT 'default'")
+    except Exception:
+        pass
+    try:
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_speedtest_service ON speedtest_samples(service)")
     except Exception:
         pass
     await db.commit()
@@ -188,6 +210,35 @@ async def latency_samples_after_id(last_id: int, service: str = 'default'):
     cur = await db.execute(
         "SELECT id, ts, success, latency_ms FROM latency_samples WHERE id > ? AND service = ? ORDER BY id ASC",
         (last_id, service),
+    )
+    rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+async def add_speedtest_sample(
+    ts: dt.datetime,
+    download_mbps: Optional[float],
+    upload_mbps: Optional[float],
+    ping_ms: Optional[float],
+    server_name: Optional[str],
+    service: str = 'default',
+):
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO speedtest_samples (ts, download_mbps, upload_mbps, ping_ms, server_name, service) VALUES (?,?,?,?,?,?)",
+        (to_utc_iso(ts), download_mbps, upload_mbps, ping_ms, server_name, service),
+    )
+    await db.commit()
+
+async def speedtest_samples_since(ts: dt.datetime, service: str = 'default'):
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT id, ts, download_mbps, upload_mbps, ping_ms, server_name
+        FROM speedtest_samples
+        WHERE ts >= ? AND service = ?
+        ORDER BY id ASC
+        """,
+        (to_utc_iso(ts), service),
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]

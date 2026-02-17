@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Internet Connectivity Tracker</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=3" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -15,8 +15,10 @@
       <button class="tab active" data-tab="status" role="tab" aria-selected="true">Status</button>
       <button class="tab" data-tab="outages" role="tab" aria-selected="false">Outages</button>
   <button class="tab" data-tab="analytics" role="tab" aria-selected="false">Analytics</button>
+  <button class="tab" data-tab="trends" role="tab" aria-selected="false">Trends</button>
   <button class="tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
     </nav>
+    <small class="tabs-hint">Swipe tabs to see more →</small>
   </header>
   <main>
     <section id="tab-status" class="tab-panel active" role="tabpanel">
@@ -82,6 +84,50 @@
         </table>
       </div>
     </section>
+    <section id="tab-trends" class="tab-panel" role="tabpanel" hidden>
+      <div class="actions">
+        <button id="trends-refresh">Refresh</button>
+      </div>
+      <div class="quick-metrics" id="trends-summary"></div>
+      <div class="table-wrapper" style="margin-top:0.75rem;">
+        <table id="trends-spikes-table">
+          <thead>
+            <tr>
+              <th>Spike Day (UTC)</th>
+              <th>Samples</th>
+              <th>Vs Avg</th>
+            </tr>
+          </thead>
+          <tbody id="trends-spikes-body"></tbody>
+        </table>
+      </div>
+      <div class="charts-grid" style="margin-top:0.75rem;">
+        <div class="chart-card">
+          <h3>Daily Packet Loss (%)</h3>
+          <canvas id="trendsLossChart" height="140"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Daily Avg Latency (ms)</h3>
+          <canvas id="trendsLatencyChart" height="140"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Daily Outages</h3>
+          <canvas id="trendsOutagesChart" height="140"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Speedtest Download (Mbps)</h3>
+          <canvas id="trendsSpeedDownloadChart" height="140"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Speedtest Upload (Mbps)</h3>
+          <canvas id="trendsSpeedUploadChart" height="140"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Speedtest Ping (ms)</h3>
+          <canvas id="trendsSpeedPingChart" height="140"></canvas>
+        </div>
+      </div>
+    </section>
   </main>
     <section id="tab-settings" class="tab-panel" role="tabpanel" hidden>
       <h2>Settings</h2>
@@ -100,6 +146,6 @@
   <footer>
     <p>Tracking connectivity every second. Configure via environment variables.</p>
   </footer>
-  <script src="/static/app.js?v=2"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>

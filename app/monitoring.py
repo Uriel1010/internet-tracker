@@ -44,6 +44,7 @@ import os
 import platform
 import re
 import json
+import shutil
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List
 import httpx
@@ -75,6 +76,12 @@ class ServiceState:
 
 _services: Dict[str, ServiceState] = {}
 _global_stop: Optional[asyncio.Event] = None
+_speedtest_task: Optional[asyncio.Task] = None
+_speedtest_stop: Optional[asyncio.Event] = None
+
+SPEEDTEST_ENABLED = os.getenv("SPEEDTEST_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+SPEEDTEST_INTERVAL = int(os.getenv("SPEEDTEST_INTERVAL", "1800"))  # 30m default
+SPEEDTEST_SERVICE = os.getenv("SPEEDTEST_SERVICE", "default")
 
 def _parse_ping_time(out: str) -> Optional[float]:
     match = re.search(r"time[=<]([\d.]+)\s*ms", out, re.IGNORECASE)
@@ -197,6 +204,59 @@ async def _service_loop(state: ServiceState):
             log.exception("Loop exception service=%s: %s", cfg.name, e)
             await asyncio.sleep(cfg.interval)
 
+async def _run_speedtest_once(service: str = 'default'):
+    cmd = shutil.which("speedtest-cli") or shutil.which("speedtest")
+    if not cmd:
+        log.warning("Speedtest is enabled but neither 'speedtest-cli' nor 'speedtest' was found in PATH")
+        return
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cmd,
+            "--json",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            err = stderr.decode(errors="ignore").strip()
+            log.warning("Speedtest failed rc=%s err=%s", proc.returncode, err)
+            return
+        payload = json.loads(stdout.decode(errors="ignore"))
+        download_bps = payload.get("download")
+        upload_bps = payload.get("upload")
+        ping_ms = payload.get("ping")
+        server_name = (payload.get("server") or {}).get("name")
+        download_mbps = (float(download_bps) / 1_000_000.0) if download_bps is not None else None
+        upload_mbps = (float(upload_bps) / 1_000_000.0) if upload_bps is not None else None
+        await db.add_speedtest_sample(
+            dt.datetime.now(dt.timezone.utc),
+            download_mbps=download_mbps,
+            upload_mbps=upload_mbps,
+            ping_ms=float(ping_ms) if ping_ms is not None else None,
+            server_name=server_name,
+            service=service,
+        )
+        log.info(
+            "Speedtest sample saved service=%s down=%.2fMbps up=%.2fMbps ping=%s",
+            service,
+            download_mbps or 0.0,
+            upload_mbps or 0.0,
+            ping_ms,
+        )
+    except Exception as e:
+        log.warning("Speedtest run failed: %s", e)
+
+async def _speedtest_loop():
+    global _speedtest_stop
+    log.info("Speedtest loop started interval=%ss service=%s", SPEEDTEST_INTERVAL, SPEEDTEST_SERVICE)
+    while _speedtest_stop and not _speedtest_stop.is_set():
+        await _run_speedtest_once(SPEEDTEST_SERVICE)
+        try:
+            await asyncio.wait_for(_speedtest_stop.wait(), timeout=max(60, SPEEDTEST_INTERVAL))
+        except asyncio.TimeoutError:
+            pass
+    log.info("Speedtest loop stopped")
+
 def _load_configs() -> List[ServiceConfig]:
     raw = os.getenv("MULTI_SERVICES")
     if not raw:
@@ -227,7 +287,7 @@ def _load_configs() -> List[ServiceConfig]:
         return []
 
 async def start():
-    global _services, _global_stop
+    global _services, _global_stop, _speedtest_task, _speedtest_stop
     if _services:  # already started
         return
     cfgs = _load_configs()
@@ -239,12 +299,22 @@ async def start():
         state = ServiceState(config=cfg, stop_event=asyncio.Event())
         _services[cfg.name] = state
         state.task = asyncio.create_task(_service_loop(state))
+    if SPEEDTEST_ENABLED:
+        _speedtest_stop = asyncio.Event()
+        _speedtest_task = asyncio.create_task(_speedtest_loop())
 
 async def stop():
+    global _speedtest_task, _speedtest_stop
     for st in _services.values():
         if st.stop_event:
             st.stop_event.set()
     await asyncio.gather(*[st.task for st in _services.values() if st.task], return_exceptions=True)
+    if _speedtest_stop:
+        _speedtest_stop.set()
+    if _speedtest_task:
+        await asyncio.gather(_speedtest_task, return_exceptions=True)
+        _speedtest_task = None
+        _speedtest_stop = None
     _services.clear()
 
 def list_services() -> List[str]:

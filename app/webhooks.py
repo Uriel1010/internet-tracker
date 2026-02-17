@@ -10,12 +10,13 @@ from . import db
 log = logging.getLogger(__name__)
 
 WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "").strip()
-DEFAULT_TEST_WEBHOOK_URL = "https://n8n.urielmz.com/webhook-test/77cc4c77-1f99-415f-8ba6-e275effc04b7"
+DEFAULT_TEST_WEBHOOK_URL = "http://192.168.31.129:58080/send-all"
 TEST_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_TEST_URL", DEFAULT_TEST_WEBHOOK_URL).strip()
 WEBHOOK_TIMEOUT = float(os.getenv("ALERT_WEBHOOK_TIMEOUT", "5"))
 SEND_END_EVENT = os.getenv("ALERT_WEBHOOK_SEND_END", "true").lower() in {"1", "true", "yes", "on"}
 # New: allow disabling start event (user requested only end notifications)
 SEND_START_EVENT = os.getenv("ALERT_WEBHOOK_SEND_START", "false").lower() in {"1", "true", "yes", "on"}
+DEFAULT_LAN_TELEGRAM_URL = "http://192.168.31.129:58080/send-all"
 
 _last_success: Optional[dt.datetime] = None
 _last_error: Optional[str] = None
@@ -34,13 +35,17 @@ async def _get_client() -> httpx.AsyncClient:
 
 
 def configured() -> bool:
-    return bool(WEBHOOK_URL)
+    return bool(_target_url())
+
+
+def _target_url() -> str:
+    return WEBHOOK_URL or DEFAULT_LAN_TELEGRAM_URL
 
 
 def status() -> Dict[str, Any]:
     return {
         "configured": configured(),
-        "url": WEBHOOK_URL if configured() else None,
+        "url": _target_url() if configured() else None,
         "last_success": _last_success.isoformat() if _last_success else None,
         "last_error": _last_error,
         "last_status_code": _last_status_code,
@@ -59,7 +64,8 @@ async def _post(payload: Dict[str, Any]):
     try:
         async with _lock:  # serialize sends
             client = await _get_client()
-            resp = await client.post(WEBHOOK_URL, json=payload)
+            outbound = {"text": payload.get("text", "")}
+            resp = await client.post(_target_url(), json=outbound)
         _last_status_code = resp.status_code
         if 200 <= resp.status_code < 300:
             _last_success = dt.datetime.now(dt.timezone.utc)
@@ -80,6 +86,21 @@ def _local_iso(dt_obj: dt.datetime) -> str:
     return db.from_utc_iso(db.to_utc_iso(dt_obj)).isoformat()
 
 
+def _local_display(dt_obj: dt.datetime) -> str:
+    return db.from_utc_iso(db.to_utc_iso(dt_obj)).strftime("%Y-%m-%d • %H:%M")
+
+
+def _duration_display(duration: float) -> str:
+    return f"{duration:.6f}"
+
+
+def _outage_text(start_time: dt.datetime, end_time: dt.datetime, duration: float) -> str:
+    return (
+        f"from {_local_display(start_time)} to {_local_display(end_time)} "
+        f"for {_duration_display(duration)} seconds"
+    )
+
+
 def outage_start_payload(service_state, outage_id: int, start_time: dt.datetime) -> Dict[str, Any]:
     cfg = service_state.config
     return {
@@ -93,6 +114,7 @@ def outage_start_payload(service_state, outage_id: int, start_time: dt.datetime)
         "interval": cfg.interval,
         "fail_threshold": cfg.fail_threshold,
         "recover_threshold": cfg.recover_threshold,
+        "text": _outage_text(start_time, start_time, 0.0),
     }
 
 
@@ -112,6 +134,7 @@ def outage_end_payload(service_state, outage_id: int, start_time: dt.datetime, e
         "interval": cfg.interval,
         "fail_threshold": cfg.fail_threshold,
         "recover_threshold": cfg.recover_threshold,
+        "text": _outage_text(start_time, end_time, duration),
     }
 
 
@@ -187,7 +210,7 @@ async def fire_example_outage():
 
 
 async def fire_test_webhook() -> Dict[str, Any]:
-    """Send a synthetic outage.end payload to the configured test webhook URL."""
+    """Send a synthetic outage.end message to the configured test webhook URL."""
     if not TEST_WEBHOOK_URL:
         raise RuntimeError("Test webhook URL not configured")
     now = dt.datetime.now(dt.timezone.utc)
@@ -213,7 +236,7 @@ async def fire_test_webhook() -> Dict[str, Any]:
     try:
         async with _lock:
             client = await _get_client()
-            resp = await client.post(TEST_WEBHOOK_URL, json=payload)
+            resp = await client.post(TEST_WEBHOOK_URL, json={"text": payload.get("text", "")})
     except Exception as exc:
         raise RuntimeError(f"Test webhook send failed: {exc}") from exc
     ok = 200 <= resp.status_code < 300

@@ -230,6 +230,132 @@ async def services_summary():
     states = monitoring.current_state()
     return {"services": names, "states": states}
 
+@app.get("/api/trends")
+async def trends(days: int = 30, service: str | None = 'default'):
+    # Keep this endpoint read-only and bounded for predictable payloads.
+    days = max(7, min(days, 180))
+    svc = service or 'default'
+    conn = await db.get_db()
+
+    latency_cur = await conn.execute(
+        """
+        SELECT
+            date(ts) AS day,
+            COUNT(*) AS samples,
+            SUM(success) AS successes,
+            SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failures,
+            AVG(CASE WHEN success = 1 THEN latency_ms END) AS avg_latency_ms
+        FROM latency_samples
+        WHERE service = ? AND date(ts) >= date('now', ?)
+        GROUP BY date(ts)
+        ORDER BY day ASC
+        """,
+        (svc, f"-{days} days"),
+    )
+    latency_rows = [dict(r) for r in await latency_cur.fetchall()]
+
+    outages_cur = await conn.execute(
+        """
+        SELECT
+            date(start_time) AS day,
+            COUNT(*) AS outage_count,
+            SUM(COALESCE(duration_seconds, 0)) AS downtime_seconds
+        FROM outages
+        WHERE service = ? AND date(start_time) >= date('now', ?)
+        GROUP BY date(start_time)
+        ORDER BY day ASC
+        """,
+        (svc, f"-{days} days"),
+    )
+    outage_rows = [dict(r) for r in await outages_cur.fetchall()]
+    outage_by_day = {r["day"]: r for r in outage_rows}
+    speedtest_cur = await conn.execute(
+        """
+        SELECT
+            date(ts) AS day,
+            AVG(download_mbps) AS avg_download_mbps,
+            AVG(upload_mbps) AS avg_upload_mbps,
+            AVG(ping_ms) AS avg_ping_ms,
+            COUNT(*) AS runs
+        FROM speedtest_samples
+        WHERE service = ? AND date(ts) >= date('now', ?)
+        GROUP BY date(ts)
+        ORDER BY day ASC
+        """,
+        (svc, f"-{days} days"),
+    )
+    speedtest_rows = [dict(r) for r in await speedtest_cur.fetchall()]
+    speedtest_by_day = {r["day"]: r for r in speedtest_rows}
+
+    end_day = dt.datetime.now(dt.timezone.utc).date()
+    start_day = end_day - dt.timedelta(days=days - 1)
+    latency_by_day = {r["day"]: r for r in latency_rows}
+    series = []
+    for i in range(days):
+        day = (start_day + dt.timedelta(days=i)).isoformat()
+        lat = latency_by_day.get(day, {})
+        outages_day = outage_by_day.get(day, {})
+        speedtest_day = speedtest_by_day.get(day, {})
+        samples = int(lat.get("samples") or 0)
+        successes = int(lat.get("successes") or 0)
+        failures = int(lat.get("failures") or 0)
+        loss_pct = (failures / samples * 100.0) if samples else 0.0
+        series.append({
+            "day": day,
+            "samples": samples,
+            "successes": successes,
+            "failures": failures,
+            "packet_loss_pct": loss_pct,
+            "avg_latency_ms": lat.get("avg_latency_ms"),
+            "outages": int(outages_day.get("outage_count") or 0),
+            "downtime_seconds": float(outages_day.get("downtime_seconds") or 0.0),
+            "avg_download_mbps": speedtest_day.get("avg_download_mbps"),
+            "avg_upload_mbps": speedtest_day.get("avg_upload_mbps"),
+            "avg_speedtest_ping_ms": speedtest_day.get("avg_ping_ms"),
+            "speedtest_runs": int(speedtest_day.get("runs") or 0),
+        })
+
+    total_samples = sum(s["samples"] for s in series)
+    total_failures = sum(s["failures"] for s in series)
+    total_outages = sum(s["outages"] for s in series)
+    total_downtime = sum(s["downtime_seconds"] for s in series)
+    overall_loss = (total_failures / total_samples * 100.0) if total_samples else 0.0
+    avg_daily_samples = (total_samples / days) if days else 0.0
+
+    worst_loss_day = max(series, key=lambda s: s["packet_loss_pct"]) if series else None
+    peak_samples_day = max(series, key=lambda s: s["samples"]) if series else None
+    spikes = []
+    spike_threshold = avg_daily_samples * 1.5
+    for row in series:
+        if row["samples"] >= 50 and row["samples"] > spike_threshold:
+            spikes.append({
+                "day": row["day"],
+                "samples": row["samples"],
+                "ratio_vs_avg": (row["samples"] / avg_daily_samples) if avg_daily_samples else None,
+            })
+
+    summary = {
+        "total_samples": total_samples,
+        "total_failures": total_failures,
+        "overall_packet_loss_pct": overall_loss,
+        "total_outages": total_outages,
+        "total_downtime_seconds": total_downtime,
+        "avg_daily_samples": avg_daily_samples,
+        "worst_loss_day": worst_loss_day,
+        "peak_samples_day": peak_samples_day,
+        "spike_days": len(spikes),
+        "speedtest_runs": sum(s["speedtest_runs"] for s in series),
+    }
+
+    return {
+        "service": svc,
+        "days": days,
+        "tz": "UTC",
+        "series": series,
+        "summary": summary,
+        "spikes": spikes,
+    }
+
 @app.get("/api/webhook/status")
 async def webhook_status():
     return webhooks.status()

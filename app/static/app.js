@@ -1,4 +1,6 @@
 let latencyChart, lossChart, jitterChart;
+let trendsLossChart, trendsLatencyChart, trendsOutagesChart;
+let trendsSpeedDownloadChart, trendsSpeedUploadChart, trendsSpeedPingChart;
 let currentRange = localStorage.getItem('metricsRange') || '5m';
 let sse; // EventSource
 let lastChartRender = 0;
@@ -123,6 +125,129 @@ function updateMetricsTable(m){
   }
 }
 
+function ensureTrendsCharts(){
+  if(!trendsLossChart){
+    const ctx = $('#trendsLossChart');
+    trendsLossChart = new Chart(ctx,{
+      type:'line',
+      data:{labels:[],datasets:[{label:'Loss %',data:[],borderColor:'#ff6384',tension:.2,pointRadius:1}]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,scales:{x:{ticks:{display:false}},y:{beginAtZero:true,max:100}}}
+    });
+  }
+  if(!trendsLatencyChart){
+    const ctx = $('#trendsLatencyChart');
+    trendsLatencyChart = new Chart(ctx,{
+      type:'line',
+      data:{labels:[],datasets:[{label:'Avg Latency',data:[],borderColor:'#4db3ff',tension:.2,pointRadius:1}]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,scales:{x:{ticks:{display:false}},y:{beginAtZero:true}}}
+    });
+  }
+  if(!trendsOutagesChart){
+    const ctx = $('#trendsOutagesChart');
+    trendsOutagesChart = new Chart(ctx,{
+      type:'bar',
+      data:{labels:[],datasets:[{label:'Outages',data:[],backgroundColor:'#f3ba2f'}]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,scales:{x:{ticks:{display:false}},y:{beginAtZero:true}}}
+    });
+  }
+  if(!trendsSpeedDownloadChart){
+    const ctx = $('#trendsSpeedDownloadChart');
+    trendsSpeedDownloadChart = new Chart(ctx,{
+      type:'line',
+      data:{labels:[],datasets:[{label:'Download Mbps',data:[],borderColor:'#2dd4bf',tension:.2,pointRadius:1}]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,scales:{x:{ticks:{display:false}},y:{beginAtZero:true}}}
+    });
+  }
+  if(!trendsSpeedUploadChart){
+    const ctx = $('#trendsSpeedUploadChart');
+    trendsSpeedUploadChart = new Chart(ctx,{
+      type:'line',
+      data:{labels:[],datasets:[{label:'Upload Mbps',data:[],borderColor:'#60a5fa',tension:.2,pointRadius:1}]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,scales:{x:{ticks:{display:false}},y:{beginAtZero:true}}}
+    });
+  }
+  if(!trendsSpeedPingChart){
+    const ctx = $('#trendsSpeedPingChart');
+    trendsSpeedPingChart = new Chart(ctx,{
+      type:'line',
+      data:{labels:[],datasets:[{label:'Ping ms',data:[],borderColor:'#f59e0b',tension:.2,pointRadius:1}]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,scales:{x:{ticks:{display:false}},y:{beginAtZero:true}}}
+    });
+  }
+}
+
+function renderTrendsSummary(summary){
+  const wrap = $('#trends-summary');
+  if(!wrap || !summary) return;
+  wrap.innerHTML = '';
+  const entries = [
+    ['Total Outages', summary.total_outages || 0],
+    ['Packet Loss', `${(summary.overall_packet_loss_pct || 0).toFixed(2)} %`],
+    ['Avg Daily Samples', (summary.avg_daily_samples || 0).toFixed(1)],
+    ['Speedtest Runs', summary.speedtest_runs || 0],
+    ['Spike Days', summary.spike_days || 0],
+    ['Worst Loss Day', summary.worst_loss_day ? `${summary.worst_loss_day.day} (${summary.worst_loss_day.packet_loss_pct.toFixed(1)}%)` : '-'],
+    ['Peak Samples', summary.peak_samples_day ? `${summary.peak_samples_day.day} (${summary.peak_samples_day.samples})` : '-']
+  ];
+  for(const [k,v] of entries){
+    const div = document.createElement('div');
+    div.className = 'metric';
+    div.innerHTML = `<h4>${k}</h4><div class="val">${v}</div>`;
+    wrap.appendChild(div);
+  }
+}
+
+function renderSpikes(spikes){
+  const body = $('#trends-spikes-body');
+  if(!body) return;
+  body.innerHTML = '';
+  if(!spikes || !spikes.length){
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="3">No spike days detected in this period.</td>';
+    body.appendChild(tr);
+    return;
+  }
+  spikes.forEach(s=>{
+    const tr = document.createElement('tr');
+    const ratio = s.ratio_vs_avg == null ? '-' : `${s.ratio_vs_avg.toFixed(2)}x`;
+    tr.innerHTML = `<td>${s.day}</td><td>${s.samples}</td><td>${ratio}</td>`;
+    body.appendChild(tr);
+  });
+}
+
+function renderTrendsCharts(series){
+  ensureTrendsCharts();
+  const labels = (series || []).map(s => s.day);
+  trendsLossChart.data.labels = labels;
+  trendsLossChart.data.datasets[0].data = (series || []).map(s => s.packet_loss_pct);
+  trendsLatencyChart.data.labels = labels;
+  trendsLatencyChart.data.datasets[0].data = (series || []).map(s => s.avg_latency_ms);
+  trendsOutagesChart.data.labels = labels;
+  trendsOutagesChart.data.datasets[0].data = (series || []).map(s => s.outages);
+  trendsSpeedDownloadChart.data.labels = labels;
+  trendsSpeedDownloadChart.data.datasets[0].data = (series || []).map(s => s.avg_download_mbps);
+  trendsSpeedUploadChart.data.labels = labels;
+  trendsSpeedUploadChart.data.datasets[0].data = (series || []).map(s => s.avg_upload_mbps);
+  trendsSpeedPingChart.data.labels = labels;
+  trendsSpeedPingChart.data.datasets[0].data = (series || []).map(s => s.avg_speedtest_ping_ms);
+  trendsLossChart.update();
+  trendsLatencyChart.update();
+  trendsOutagesChart.update();
+  trendsSpeedDownloadChart.update();
+  trendsSpeedUploadChart.update();
+  trendsSpeedPingChart.update();
+}
+
+async function fetchTrends(){
+  try {
+    const r = await fetch('/api/trends?days=30');
+    const data = await r.json();
+    renderTrendsSummary(data.summary);
+    renderSpikes(data.spikes);
+    renderTrendsCharts(data.series);
+  } catch(e){ /* ignore */ }
+}
+
 // Web worker handles trimming & decimation; no local trimming needed now.
 
 async function fetchMetrics() {
@@ -154,6 +279,7 @@ function initTabs(){
         }, 2000);
       }
       if(tab==='outages'){ fetchOutages(); }
+      if(tab==='trends'){ fetchTrends(); }
       if(tab==='settings'){ refreshWebhookStatus(); }
     });
   });
@@ -166,17 +292,21 @@ function init(){
   fetchStatus();
   fetchOutages();
   fetchMetrics();
+  fetchTrends();
   armFallback();
   setInterval(fetchStatus, 1000);
   setInterval(()=> { if(!sse) fetchMetrics(); }, 20000);
   $('#refresh').addEventListener('click', fetchOutages);
   $('#export').addEventListener('click', ()=> window.location='/api/outages/export');
   setInterval(fetchOutages, 20000);
+  setInterval(fetchTrends, 60000);
   initRangeButtons();
   initDecimationSlider();
   initPauseButton();
   startSSE();
   initWebhookTest();
+  const trendsRefresh = $('#trends-refresh');
+  if(trendsRefresh){ trendsRefresh.addEventListener('click', fetchTrends); }
 }
 
 function initRangeButtons(){
@@ -531,4 +661,3 @@ async function triggerExternalWebhookTest(){
     if(btn){ btn.disabled = false; btn.textContent = 'Send Test Webhook'; }
   }
 }
-

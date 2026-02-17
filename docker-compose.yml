@@ -5,17 +5,8 @@ services:
     restart: unless-stopped
     ports:
       - "18000:8000"
-    environment:
-      CHECK_INTERVAL: 1
-      TARGET_HOST: 8.8.8.8
-      CHECK_METHOD: ping
-      FAIL_THRESHOLD: 2
-      RECOVER_THRESHOLD: 2
-      DB_PATH: /data/data.sqlite3
-      TZ: Asia/Jerusalem
-      ALERT_WEBHOOK_URL: https://n8n.urielmz.com/webhook/77cc4c77-1f99-415f-8ba6-e275effc04b7
-      ALERT_WEBHOOK_SEND_END: true
-      ALERT_WEBHOOK_TIMEOUT: 5
+    env_file:
+      - .env
     volumes:
       - ./data:/data
     # To use HTTP instead of ping (if ping blocked):
