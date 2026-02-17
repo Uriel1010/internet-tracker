@@ -209,6 +209,7 @@ TZ=Asia/Jerusalem
 ## 📡 API Endpoints
 
 The application provides a RESTful API for accessing connectivity data.
+For full request/response examples and Home Assistant integration snippets, see [`API_README.md`](API_README.md).
 
 | Method | Endpoint | Description | Notes |
 | ------ | -------- | ----------- | ----- |
@@ -218,6 +219,7 @@ The application provides a RESTful API for accessing connectivity data.
 | GET | `/api/metrics?range=5m` | Metrics + samples (filtered) | Ranges: 5m,1h,24h,all |
 | GET | `/api/metrics/export.csv` | Bulk CSV export | Includes both time forms |
 | GET | `/api/trends?days=30` | Daily trends (loss/latency/outages + speedtest) | `days` min 7, max 180 |
+| GET | `/api/integration/home-assistant` | Flattened payload for Home Assistant REST sensors | optional `service` |
 | GET | `/api/stream/samples` | SSE with new samples | Auto-reconnect handled in UI |
 
 Additional endpoints:

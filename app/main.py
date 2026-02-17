@@ -230,6 +230,80 @@ async def services_summary():
     states = monitoring.current_state()
     return {"services": names, "states": states}
 
+@app.get("/api/integration/home-assistant")
+async def home_assistant_integration(service: str | None = 'default'):
+    """Flattened integration payload for Home Assistant REST sensors."""
+    svc = service or 'default'
+    now = dt.datetime.now(dt.timezone.utc)
+    state = monitoring.current_state(svc) or {}
+
+    # 5-minute quality metrics
+    samples_5m = await db.latency_samples_since(now - dt.timedelta(minutes=5), service=svc)
+    metrics_5m = compute_latency_metrics(samples_5m)
+
+    conn = await db.get_db()
+
+    # 24-hour outage aggregates
+    cur_out_24h = await conn.execute(
+        """
+        SELECT COUNT(*) AS outages_24h, SUM(COALESCE(duration_seconds, 0)) AS downtime_seconds_24h
+        FROM outages
+        WHERE service = ? AND start_time >= ?
+        """,
+        (svc, db.to_utc_iso(now - dt.timedelta(hours=24))),
+    )
+    out_24h = dict(await cur_out_24h.fetchone())
+
+    # 30-day high-level trend summary (reusing existing endpoint logic)
+    trends_30d = await trends(days=30, service=svc)
+    summary_30d = trends_30d.get("summary", {})
+
+    # Latest speedtest sample
+    cur_speed = await conn.execute(
+        """
+        SELECT ts, download_mbps, upload_mbps, ping_ms, server_name
+        FROM speedtest_samples
+        WHERE service = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (svc,),
+    )
+    last_speed = await cur_speed.fetchone()
+    speed = dict(last_speed) if last_speed else {}
+
+    last_ok = state.get("last_ok")
+    status = "unknown"
+    if last_ok is True:
+        status = "online"
+    elif last_ok is False:
+        status = "offline"
+
+    return {
+        "service": svc,
+        "status": status,
+        "last_ok": last_ok,
+        "last_latency_ms": state.get("last_latency_ms"),
+        "checks": state.get("checks"),
+        "consecutive_failures": state.get("consecutive_failures"),
+        "consecutive_successes": state.get("consecutive_successes"),
+        "packet_loss_pct_5m": metrics_5m.get("packet_loss_pct"),
+        "avg_latency_ms_5m": metrics_5m.get("avg_latency_ms"),
+        "jitter_avg_abs_ms_5m": metrics_5m.get("jitter_avg_abs_ms"),
+        "samples_5m": metrics_5m.get("count"),
+        "outages_24h": int(out_24h.get("outages_24h") or 0),
+        "downtime_seconds_24h": float(out_24h.get("downtime_seconds_24h") or 0.0),
+        "outages_30d": int(summary_30d.get("total_outages") or 0),
+        "packet_loss_pct_30d": summary_30d.get("overall_packet_loss_pct"),
+        "speedtest_runs_30d": int(summary_30d.get("speedtest_runs") or 0),
+        "last_speedtest_ts": speed.get("ts"),
+        "last_speedtest_download_mbps": speed.get("download_mbps"),
+        "last_speedtest_upload_mbps": speed.get("upload_mbps"),
+        "last_speedtest_ping_ms": speed.get("ping_ms"),
+        "last_speedtest_server_name": speed.get("server_name"),
+        "updated_at_utc": now.isoformat(),
+    }
+
 @app.get("/api/trends")
 async def trends(days: int = 30, service: str | None = 'default'):
     # Keep this endpoint read-only and bounded for predictable payloads.
