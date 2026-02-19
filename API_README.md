@@ -66,8 +66,9 @@ Example response:
 ```json
 {
   "service": "default",
-  "status": "online",
-  "last_ok": true,
+  "status": "up",
+  "last_ok": "2026-02-18T10:10:30.123456+00:00",
+  "last_ok_bool": true,
   "last_latency_ms": 22.4,
   "checks": 24819,
   "consecutive_failures": 0,
@@ -86,8 +87,43 @@ Example response:
   "last_speedtest_upload_mbps": 51.3,
   "last_speedtest_ping_ms": 7.8,
   "last_speedtest_server_name": "Provider Node A",
+  "service_configured": true,
+  "probe_running": true,
+  "speedtest_enabled": true,
+  "speedtest_status": "enabled",
   "updated_at_utc": "2026-02-18T10:11:00.000000+00:00"
 }
+```
+
+Status values:
+- `initializing`: no checks recorded yet for this service
+- `up`: checks are healthy
+- `degraded`: partial failures / packet loss detected
+- `down`: consecutive failures reached threshold
+
+### `POST /api/debug/check-once`
+Runs one immediate probe cycle for a service and returns:
+- probe result (`ok`, `latency_ms`, `checks`, `ts`)
+- full Home Assistant integration payload after that write
+
+Example:
+```bash
+curl -s -X POST "http://localhost:18000/api/debug/check-once?service=it"
+```
+
+If service is not configured yet, bootstrap it from legacy env defaults and run one cycle:
+```bash
+curl -s -X POST "http://localhost:18000/api/debug/check-once?service=it&start_if_missing=true"
+```
+
+Start a service worker explicitly:
+```bash
+curl -s -X POST "http://localhost:18000/api/debug/start-service?service=it"
+```
+
+Run one speedtest immediately and read back integration payload:
+```bash
+curl -s -X POST "http://localhost:18000/api/debug/speedtest-once?service=it"
 ```
 
 ## Home Assistant YAML Example

@@ -236,12 +236,17 @@ async def home_assistant_integration(service: str | None = 'default'):
     svc = service or 'default'
     now = dt.datetime.now(dt.timezone.utc)
     state = monitoring.current_state(svc) or {}
+    runtime = monitoring.service_runtime(svc)
+    if not runtime.get("configured"):
+        log.warning("Integration request for unconfigured service=%s (no active check job)", svc)
 
     # 5-minute quality metrics
     samples_5m = await db.latency_samples_since(now - dt.timedelta(minutes=5), service=svc)
     metrics_5m = compute_latency_metrics(samples_5m)
 
     conn = await db.get_db()
+    since_24h = db.to_utc_iso(now - dt.timedelta(hours=24))
+    since_30d = db.to_utc_iso(now - dt.timedelta(days=30))
 
     # 24-hour outage aggregates
     cur_out_24h = await conn.execute(
@@ -250,59 +255,175 @@ async def home_assistant_integration(service: str | None = 'default'):
         FROM outages
         WHERE service = ? AND start_time >= ?
         """,
-        (svc, db.to_utc_iso(now - dt.timedelta(hours=24))),
+        (svc, since_24h),
     )
     out_24h = dict(await cur_out_24h.fetchone())
 
-    # 30-day high-level trend summary (reusing existing endpoint logic)
-    trends_30d = await trends(days=30, service=svc)
-    summary_30d = trends_30d.get("summary", {})
-
-    # Latest speedtest sample
-    cur_speed = await conn.execute(
+    cur_lat_30d = await conn.execute(
         """
-        SELECT ts, download_mbps, upload_mbps, ping_ms, server_name
-        FROM speedtest_samples
-        WHERE service = ?
-        ORDER BY id DESC
-        LIMIT 1
+        SELECT COUNT(*) AS total_samples_30d, SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS total_failures_30d
+        FROM latency_samples
+        WHERE service = ? AND ts >= ?
         """,
+        (svc, since_30d),
+    )
+    lat_30d = dict(await cur_lat_30d.fetchone())
+    samples_30d = int(lat_30d.get("total_samples_30d") or 0)
+    failures_30d = int(lat_30d.get("total_failures_30d") or 0)
+    packet_loss_30d = (failures_30d / samples_30d * 100.0) if samples_30d else 0.0
+
+    cur_out_30d = await conn.execute(
+        "SELECT COUNT(*) AS outages_30d FROM outages WHERE service = ? AND start_time >= ?",
+        (svc, since_30d),
+    )
+    outages_30d = int((await cur_out_30d.fetchone())["outages_30d"] or 0)
+
+    cur_count = await conn.execute("SELECT COUNT(*) AS total_checks FROM latency_samples WHERE service = ?", (svc,))
+    total_checks = int((await cur_count.fetchone())["total_checks"] or 0)
+
+    cur_last_sample = await conn.execute(
+        "SELECT ts, success, latency_ms FROM latency_samples WHERE service = ? ORDER BY id DESC LIMIT 1",
         (svc,),
     )
-    last_speed = await cur_speed.fetchone()
-    speed = dict(last_speed) if last_speed else {}
+    last_sample = await cur_last_sample.fetchone()
+    latest_sample = dict(last_sample) if last_sample else {}
 
-    last_ok = state.get("last_ok")
-    status = "unknown"
-    if last_ok is True:
-        status = "online"
-    elif last_ok is False:
-        status = "offline"
+    cur_last_ok = await conn.execute(
+        "SELECT ts FROM latency_samples WHERE service = ? AND success = 1 ORDER BY id DESC LIMIT 1",
+        (svc,),
+    )
+    last_ok_row = await cur_last_ok.fetchone()
+    last_ok_ts = state.get("last_ok_time") or (dict(last_ok_row).get("ts") if last_ok_row else None)
+
+    # Latest speedtest sample
+    speed = {}
+    speedtest_enabled = bool(monitoring.SPEEDTEST_ENABLED)
+    if speedtest_enabled:
+        cur_speed = await conn.execute(
+            """
+            SELECT ts, download_mbps, upload_mbps, ping_ms, server_name
+            FROM speedtest_samples
+            WHERE service = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (svc,),
+        )
+        last_speed = await cur_speed.fetchone()
+        speed = dict(last_speed) if last_speed else {}
+    else:
+        speed = {
+            "ts": None,
+            "download_mbps": None,
+            "upload_mbps": None,
+            "ping_ms": None,
+            "server_name": None,
+        }
+
+    cur_speed_30d = await conn.execute(
+        "SELECT COUNT(*) AS speedtest_runs_30d FROM speedtest_samples WHERE service = ? AND ts >= ?",
+        (svc, since_30d),
+    )
+    speedtest_runs_30d = int((await cur_speed_30d.fetchone())["speedtest_runs_30d"] or 0)
+
+    checks = int(state.get("checks") or total_checks or 0)
+    consecutive_failures = int(state.get("consecutive_failures") or 0)
+    consecutive_successes = int(state.get("consecutive_successes") or 0)
+    last_latency_ms = state.get("last_latency_ms")
+    if last_latency_ms is None and latest_sample:
+        last_latency_ms = latest_sample.get("latency_ms")
+
+    # Backward-compatible bool signal derived from runtime state/sample fallback
+    last_ok_bool = state.get("last_ok")
+    if last_ok_bool is None and latest_sample:
+        last_ok_bool = bool(latest_sample.get("success")) if latest_sample.get("success") is not None else None
+
+    if checks == 0:
+        status = "initializing"
+    elif last_ok_bool is False and consecutive_failures >= int(state.get("fail_threshold") or 1):
+        status = "down"
+    elif (metrics_5m.get("packet_loss_pct") or 0.0) > 0.0 or consecutive_failures > 0:
+        status = "degraded"
+    else:
+        status = "up"
 
     return {
         "service": svc,
         "status": status,
-        "last_ok": last_ok,
-        "last_latency_ms": state.get("last_latency_ms"),
-        "checks": state.get("checks"),
-        "consecutive_failures": state.get("consecutive_failures"),
-        "consecutive_successes": state.get("consecutive_successes"),
+        # Contract note: kept for existing clients. Timestamp of last successful check.
+        "last_ok": last_ok_ts,
+        "last_ok_bool": last_ok_bool,
+        "last_latency_ms": last_latency_ms,
+        "checks": checks,
+        "consecutive_failures": consecutive_failures,
+        "consecutive_successes": consecutive_successes,
         "packet_loss_pct_5m": metrics_5m.get("packet_loss_pct"),
         "avg_latency_ms_5m": metrics_5m.get("avg_latency_ms"),
         "jitter_avg_abs_ms_5m": metrics_5m.get("jitter_avg_abs_ms"),
-        "samples_5m": metrics_5m.get("count"),
+        "samples_5m": int(metrics_5m.get("count") or 0),
         "outages_24h": int(out_24h.get("outages_24h") or 0),
         "downtime_seconds_24h": float(out_24h.get("downtime_seconds_24h") or 0.0),
-        "outages_30d": int(summary_30d.get("total_outages") or 0),
-        "packet_loss_pct_30d": summary_30d.get("overall_packet_loss_pct"),
-        "speedtest_runs_30d": int(summary_30d.get("speedtest_runs") or 0),
+        "outages_30d": outages_30d,
+        "packet_loss_pct_30d": packet_loss_30d,
+        "speedtest_runs_30d": speedtest_runs_30d,
         "last_speedtest_ts": speed.get("ts"),
         "last_speedtest_download_mbps": speed.get("download_mbps"),
         "last_speedtest_upload_mbps": speed.get("upload_mbps"),
         "last_speedtest_ping_ms": speed.get("ping_ms"),
         "last_speedtest_server_name": speed.get("server_name"),
+        "service_configured": bool(runtime.get("configured")),
+        "probe_running": bool(runtime.get("running")),
+        "speedtest_enabled": speedtest_enabled,
+        "speedtest_status": (
+            "disabled"
+            if not speedtest_enabled
+            else ("enabled" if speed.get("ts") else "enabled_no_data")
+        ),
         "updated_at_utc": now.isoformat(),
     }
+
+@app.post("/api/debug/check-once")
+async def debug_check_once(service: str | None = 'default', start_if_missing: bool = False):
+    """Run one immediate probe cycle for a service and return integration payload."""
+    svc = service or 'default'
+    runtime = monitoring.service_runtime(svc)
+    if not runtime.get("configured") and start_if_missing:
+        await monitoring.start_service(svc)
+    try:
+        result = await monitoring.run_single_check(svc)
+    except ValueError as e:
+        log.warning("Check-once called for unconfigured service=%s: %s", svc, e)
+        return {
+            "ok": False,
+            "service": svc,
+            "error": str(e),
+            "hint": "Set start_if_missing=true or configure MULTI_SERVICES with this service",
+            "configured_services": monitoring.list_services(),
+        }
+    except Exception as e:
+        log.error("Check-once failed service=%s: %s", svc, e)
+        return {"ok": False, "service": svc, "error": str(e)}
+
+    payload = await home_assistant_integration(service=svc)
+    return {"ok": True, "probe": result, "integration": payload}
+
+@app.post("/api/debug/start-service")
+async def debug_start_service(service: str):
+    if not service.strip():
+        return {"ok": False, "error": "service is required"}
+    started = await monitoring.start_service(service.strip())
+    return {"ok": True, **started, "services": monitoring.list_services()}
+
+@app.post("/api/debug/speedtest-once")
+async def debug_speedtest_once(service: str | None = 'default'):
+    svc = service or 'default'
+    runtime = monitoring.service_runtime(svc)
+    if not runtime.get("configured"):
+        log.warning("Speedtest-once called for unconfigured service=%s", svc)
+        return {"ok": False, "service": svc, "error": "service_not_configured", "configured_services": monitoring.list_services()}
+    result = await monitoring.run_speedtest_once(svc)
+    payload = await home_assistant_integration(service=svc)
+    return {"ok": bool(result.get("ok")), "speedtest": result, "integration": payload}
 
 @app.get("/api/trends")
 async def trends(days: int = 30, service: str | None = 'default'):

@@ -70,6 +70,9 @@ class ServiceState:
     last_ok: Optional[bool] = None
     last_latency_ms: Optional[float] = None
     check_count: int = 0
+    last_check_time: Optional[dt.datetime] = None
+    last_ok_time: Optional[dt.datetime] = None
+    last_error: Optional[str] = None
     first_failure_time: Optional[dt.datetime] = None
     stop_event: Optional[asyncio.Event] = None
     task: Optional[asyncio.Task] = None
@@ -82,6 +85,8 @@ _speedtest_stop: Optional[asyncio.Event] = None
 SPEEDTEST_ENABLED = os.getenv("SPEEDTEST_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 SPEEDTEST_INTERVAL = int(os.getenv("SPEEDTEST_INTERVAL", "1800"))  # 30m default
 SPEEDTEST_SERVICE = os.getenv("SPEEDTEST_SERVICE", "default")
+SPEEDTEST_TIMEOUT = int(os.getenv("SPEEDTEST_TIMEOUT", "90"))
+SPEEDTEST_RETRIES = int(os.getenv("SPEEDTEST_RETRIES", "2"))
 
 def _parse_ping_time(out: str) -> Optional[float]:
     match = re.search(r"time[=<]([\d.]+)\s*ms", out, re.IGNORECASE)
@@ -101,11 +106,14 @@ async def _ping(target: str, state: ServiceState) -> bool:
         success = proc.returncode == 0
         if success:
             state.last_latency_ms = _parse_ping_time(out)
+            state.last_error = None
         else:
             err = stderr.decode(errors="ignore")
+            state.last_error = err.strip() or "ping failed"
             log.warning("Ping failed service=%s target=%s: %s", state.config.name, target, err.strip())
         return success
     except Exception as e:
+        state.last_error = str(e)
         log.error("Error running ping command for service=%s target=%s: %s", state.config.name, target, e)
         return False
 
@@ -119,9 +127,12 @@ async def _http_check(target: str, state: ServiceState) -> bool:
             r = await client.get(url)
             if 200 <= r.status_code < 400:
                 state.last_latency_ms = (dt.datetime.utcnow() - start).total_seconds()*1000
+                state.last_error = None
                 return True
+            state.last_error = f"http status {r.status_code}"
             return False
     except Exception as e:
+        state.last_error = str(e)
         log.warning("HTTP check failed service=%s url=%s: %s", state.config.name, url, e)
         return False
 
@@ -154,6 +165,7 @@ async def _service_loop(state: ServiceState):
             else:
                 ok = await _ping(cfg.target, state)
             now = dt.datetime.now(dt.timezone.utc)
+            state.last_check_time = now
             state.last_ok = ok
             state.check_count += 1
             try:
@@ -161,6 +173,7 @@ async def _service_loop(state: ServiceState):
             except Exception as e:
                 log.error("Add sample failed service=%s: %s", cfg.name, e)
             if ok:
+                state.last_ok_time = now
                 state.consec_success += 1
                 if state.consec_fail > 0 and state.first_failure_time and state.consec_fail < cfg.fail_threshold:
                     log.debug("Failure streak cleared before threshold service=%s fails=%d", cfg.name, state.consec_fail)
@@ -204,53 +217,136 @@ async def _service_loop(state: ServiceState):
             log.exception("Loop exception service=%s: %s", cfg.name, e)
             await asyncio.sleep(cfg.interval)
 
+def _speedtest_targets() -> List[str]:
+    configured = list_services()
+    raw = (SPEEDTEST_SERVICE or "default").strip()
+    if raw.lower() in ("all", "*"):
+        if configured:
+            return configured
+        return ["default"]
+    if "," in raw:
+        targets = [s.strip() for s in raw.split(",") if s.strip()]
+        return targets or (configured if configured else ["default"])
+    if configured and raw not in configured:
+        # Auto-heal common misconfig: SPEEDTEST_SERVICE points to missing service.
+        log.warning(
+            "Speedtest service target '%s' is not configured. Falling back to all configured services=%s",
+            raw, configured,
+        )
+        return configured
+    return [raw]
+
 async def _run_speedtest_once(service: str = 'default'):
     cmd = shutil.which("speedtest-cli") or shutil.which("speedtest")
     if not cmd:
-        log.warning("Speedtest is enabled but neither 'speedtest-cli' nor 'speedtest' was found in PATH")
-        return
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            cmd,
-            "--json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            err = stderr.decode(errors="ignore").strip()
-            log.warning("Speedtest failed rc=%s err=%s", proc.returncode, err)
-            return
-        payload = json.loads(stdout.decode(errors="ignore"))
-        download_bps = payload.get("download")
-        upload_bps = payload.get("upload")
-        ping_ms = payload.get("ping")
-        server_name = (payload.get("server") or {}).get("name")
-        download_mbps = (float(download_bps) / 1_000_000.0) if download_bps is not None else None
-        upload_mbps = (float(upload_bps) / 1_000_000.0) if upload_bps is not None else None
-        await db.add_speedtest_sample(
-            dt.datetime.now(dt.timezone.utc),
-            download_mbps=download_mbps,
-            upload_mbps=upload_mbps,
-            ping_ms=float(ping_ms) if ping_ms is not None else None,
-            server_name=server_name,
-            service=service,
-        )
-        log.info(
-            "Speedtest sample saved service=%s down=%.2fMbps up=%.2fMbps ping=%s",
-            service,
-            download_mbps or 0.0,
-            upload_mbps or 0.0,
-            ping_ms,
-        )
-    except Exception as e:
-        log.warning("Speedtest run failed: %s", e)
+        msg = "speedtest command missing"
+        log.warning("Speedtest skipped service=%s category=command_missing msg=%s", service, msg)
+        return {"ok": False, "service": service, "category": "command_missing", "error": msg}
+    attempt = 0
+    started = dt.datetime.now(dt.timezone.utc)
+    while attempt <= SPEEDTEST_RETRIES:
+        attempt += 1
+        try:
+            log.info("Speedtest started service=%s attempt=%d timeout=%ss", service, attempt, SPEEDTEST_TIMEOUT)
+            proc = await asyncio.create_subprocess_exec(
+                cmd,
+                "--json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=SPEEDTEST_TIMEOUT)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise asyncio.TimeoutError("speedtest timed out")
+            if proc.returncode != 0:
+                err = stderr.decode(errors="ignore").strip()
+                category = "return_code"
+                log.warning(
+                    "Speedtest failed service=%s category=%s attempt=%d rc=%s err=%s",
+                    service, category, attempt, proc.returncode, err
+                )
+                if attempt <= SPEEDTEST_RETRIES:
+                    await asyncio.sleep(min(10, 2 ** attempt))
+                    continue
+                return {"ok": False, "service": service, "category": category, "error": err}
+
+            payload = json.loads(stdout.decode(errors="ignore"))
+            download_bps = payload.get("download")
+            upload_bps = payload.get("upload")
+            ping_ms = payload.get("ping")
+            server_name = (payload.get("server") or {}).get("name")
+            download_mbps = (float(download_bps) / 1_000_000.0) if download_bps is not None else None
+            upload_mbps = (float(upload_bps) / 1_000_000.0) if upload_bps is not None else None
+            now = dt.datetime.now(dt.timezone.utc)
+            try:
+                await db.add_speedtest_sample(
+                    now,
+                    download_mbps=download_mbps,
+                    upload_mbps=upload_mbps,
+                    ping_ms=float(ping_ms) if ping_ms is not None else None,
+                    server_name=server_name,
+                    service=service,
+                )
+            except Exception as e:
+                log.error("Speedtest DB write failed service=%s category=db_write_error err=%s", service, e)
+                return {"ok": False, "service": service, "category": "db_write_error", "error": str(e)}
+            duration = (dt.datetime.now(dt.timezone.utc) - started).total_seconds()
+            log.info(
+                "Speedtest succeeded service=%s down=%.2fMbps up=%.2fMbps ping=%s server=%s duration=%.2fs persisted=true",
+                service,
+                download_mbps or 0.0,
+                upload_mbps or 0.0,
+                ping_ms,
+                server_name,
+                duration,
+            )
+            return {
+                "ok": True,
+                "service": service,
+                "ts": now.isoformat(),
+                "download_mbps": download_mbps,
+                "upload_mbps": upload_mbps,
+                "ping_ms": float(ping_ms) if ping_ms is not None else None,
+                "server_name": server_name,
+            }
+        except asyncio.TimeoutError as e:
+            category = "timeout"
+            log.warning("Speedtest failed service=%s category=%s attempt=%d err=%s", service, category, attempt, e)
+            if attempt <= SPEEDTEST_RETRIES:
+                await asyncio.sleep(min(10, 2 ** attempt))
+                continue
+            return {"ok": False, "service": service, "category": category, "error": str(e)}
+        except json.JSONDecodeError as e:
+            category = "parse_error"
+            log.warning("Speedtest failed service=%s category=%s attempt=%d err=%s", service, category, attempt, e)
+            return {"ok": False, "service": service, "category": category, "error": str(e)}
+        except Exception as e:
+            category = "execution_error"
+            log.warning("Speedtest failed service=%s category=%s attempt=%d err=%s", service, category, attempt, e)
+            if attempt <= SPEEDTEST_RETRIES:
+                await asyncio.sleep(min(10, 2 ** attempt))
+                continue
+            return {"ok": False, "service": service, "category": category, "error": str(e)}
+    return {"ok": False, "service": service, "category": "unknown", "error": "unreachable"}
 
 async def _speedtest_loop():
     global _speedtest_stop
-    log.info("Speedtest loop started interval=%ss service=%s", SPEEDTEST_INTERVAL, SPEEDTEST_SERVICE)
+    log.info(
+        "Speedtest loop started interval=%ss target=%s timeout=%ss retries=%s",
+        SPEEDTEST_INTERVAL, SPEEDTEST_SERVICE, SPEEDTEST_TIMEOUT, SPEEDTEST_RETRIES
+    )
     while _speedtest_stop and not _speedtest_stop.is_set():
-        await _run_speedtest_once(SPEEDTEST_SERVICE)
+        targets = _speedtest_targets()
+        log.info("Speedtest scheduled targets=%s", targets)
+        for svc in targets:
+            try:
+                await _run_speedtest_once(svc)
+            except Exception as e:
+                log.error("Speedtest loop error service=%s err=%s", svc, e)
         try:
             await asyncio.wait_for(_speedtest_stop.wait(), timeout=max(60, SPEEDTEST_INTERVAL))
         except asyncio.TimeoutError:
@@ -286,6 +382,16 @@ def _load_configs() -> List[ServiceConfig]:
         log.error("Failed to parse MULTI_SERVICES: %s", e)
         return []
 
+def _legacy_config_for(name: str) -> ServiceConfig:
+    return ServiceConfig(
+        name=name,
+        method=os.getenv("CHECK_METHOD", "ping"),
+        target=os.getenv("TARGET_HOST", "8.8.8.8"),
+        interval=float(os.getenv("CHECK_INTERVAL", "1")),
+        fail_threshold=int(os.getenv("FAIL_THRESHOLD", "2")),
+        recover_threshold=int(os.getenv("RECOVER_THRESHOLD", "2")),
+    )
+
 async def start():
     global _services, _global_stop, _speedtest_task, _speedtest_stop
     if _services:  # already started
@@ -317,6 +423,17 @@ async def stop():
         _speedtest_stop = None
     _services.clear()
 
+async def start_service(name: str):
+    if name in _services:
+        st = _services[name]
+        return {"service": name, "already_running": bool(st.task and not st.task.done())}
+    cfg = _legacy_config_for(name)
+    state = ServiceState(config=cfg, stop_event=asyncio.Event())
+    _services[name] = state
+    state.task = asyncio.create_task(_service_loop(state))
+    log.info("Dynamically started service=%s target=%s method=%s interval=%.2f", cfg.name, cfg.target, cfg.method, cfg.interval)
+    return {"service": name, "already_running": False}
+
 def list_services() -> List[str]:
     return list(_services.keys())
 
@@ -341,6 +458,9 @@ def _state_dict(st: ServiceState):
         "consecutive_failures": st.consec_fail,
         "consecutive_successes": st.consec_success,
         "checks": st.check_count,
+        "last_check_time": st.last_check_time.isoformat() if st.last_check_time else None,
+        "last_ok_time": st.last_ok_time.isoformat() if st.last_ok_time else None,
+        "last_error": st.last_error,
         "fail_threshold": st.config.fail_threshold,
         "recover_threshold": st.config.recover_threshold,
     }
@@ -360,3 +480,46 @@ def get_counters(service: str):
         "target": st.config.target,
         "service": service,
     }
+
+def service_runtime(service: str):
+    st = _services.get(service)
+    if not st:
+        return {"configured": False, "running": False}
+    task_running = bool(st.task and not st.task.done())
+    return {"configured": True, "running": task_running}
+
+async def run_single_check(service: str):
+    st = _services.get(service)
+    if not st:
+        raise ValueError(f"service_not_configured:{service}")
+    cfg = st.config
+    if cfg.method == "http":
+        ok = await _http_check(cfg.target, st)
+    else:
+        ok = await _ping(cfg.target, st)
+    now = dt.datetime.now(dt.timezone.utc)
+    st.last_check_time = now
+    st.last_ok = ok
+    st.check_count += 1
+    if ok:
+        st.last_ok_time = now
+        st.consec_success += 1
+        st.consec_fail = 0
+    else:
+        st.consec_fail += 1
+        st.consec_success = 0
+    try:
+        await db.add_latency_sample(now, ok, st.last_latency_ms if ok else None, cfg.name)
+    except Exception as e:
+        log.error("Add sample failed during check-once service=%s: %s", service, e)
+        raise
+    return {
+        "service": service,
+        "ok": ok,
+        "latency_ms": st.last_latency_ms if ok else None,
+        "ts": now.isoformat(),
+        "checks": st.check_count,
+    }
+
+async def run_speedtest_once(service: str):
+    return await _run_speedtest_once(service)
