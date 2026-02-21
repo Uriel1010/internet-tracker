@@ -16,6 +16,7 @@ WEBHOOK_TIMEOUT = float(os.getenv("ALERT_WEBHOOK_TIMEOUT", "5"))
 SEND_END_EVENT = os.getenv("ALERT_WEBHOOK_SEND_END", "true").lower() in {"1", "true", "yes", "on"}
 # New: allow disabling start event (user requested only end notifications)
 SEND_START_EVENT = os.getenv("ALERT_WEBHOOK_SEND_START", "false").lower() in {"1", "true", "yes", "on"}
+DEDUPE_WINDOW_SECONDS = float(os.getenv("ALERT_WEBHOOK_DEDUP_WINDOW_SECONDS", "300"))
 DEFAULT_LAN_TELEGRAM_URL = "http://192.168.31.129:58080/send-all"
 
 _last_success: Optional[dt.datetime] = None
@@ -25,6 +26,7 @@ _last_event: Optional[str] = None
 
 _client: Optional[httpx.AsyncClient] = None
 _lock = asyncio.Lock()
+_recent_outage_events: Dict[str, dt.datetime] = {}
 
 
 async def _get_client() -> httpx.AsyncClient:
@@ -52,9 +54,37 @@ def status() -> Dict[str, Any]:
         "last_event": _last_event,
         "send_end_event": SEND_END_EVENT,
         "send_start_event": SEND_START_EVENT,
+        "dedup_window_seconds": DEDUPE_WINDOW_SECONDS,
         "test_url": TEST_WEBHOOK_URL or None,
         "timeout_seconds": WEBHOOK_TIMEOUT,
     }
+
+
+def _event_key(payload: Dict[str, Any]) -> Optional[str]:
+    event = payload.get("event")
+    outage_id = payload.get("outage_id")
+    if not event or outage_id is None:
+        return None
+    service = payload.get("service") or "default"
+    return f"{event}:{service}:{outage_id}"
+
+
+def _should_send(payload: Dict[str, Any]) -> bool:
+    if DEDUPE_WINDOW_SECONDS <= 0:
+        return True
+    key = _event_key(payload)
+    if not key:
+        return True
+    now = dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(seconds=DEDUPE_WINDOW_SECONDS)
+    stale_keys = [k for k, ts in _recent_outage_events.items() if ts < cutoff]
+    for stale_key in stale_keys:
+        _recent_outage_events.pop(stale_key, None)
+    prev = _recent_outage_events.get(key)
+    if prev and prev >= cutoff:
+        return False
+    _recent_outage_events[key] = now
+    return True
 
 
 async def _post(payload: Dict[str, Any]):
@@ -63,6 +93,13 @@ async def _post(payload: Dict[str, Any]):
         return
     try:
         async with _lock:  # serialize sends
+            if not _should_send(payload):
+                log.info("Webhook deduplicated event=%s service=%s outage_id=%s",
+                         payload.get("event"), payload.get("service"), payload.get("outage_id"))
+                _last_event = payload.get("event")
+                _last_status_code = None
+                _last_error = None
+                return
             client = await _get_client()
             outbound = {"text": payload.get("text", "")}
             resp = await client.post(_target_url(), json=outbound)
